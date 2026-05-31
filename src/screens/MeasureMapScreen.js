@@ -6,6 +6,14 @@ import AccuracyBadge from '../components/AccuracyBadge';
 import InfoCard from '../components/InfoCard';
 import PrimaryButton from '../components/PrimaryButton';
 import colors from '../constants/colors';
+import {
+  calculateAreaM2,
+  calculateAverageAccuracy,
+  calculateMaxAccuracy,
+  calculateMinAccuracy,
+  calculatePerimeterM,
+  m2ToHectares,
+} from '../utils/geoUtils';
 import screenStyles from './screenStyles';
 
 const POSITION_UNAVAILABLE_MESSAGE =
@@ -164,6 +172,32 @@ export default function MeasureMapScreen({ navigation, route }) {
     );
   }, [savedPoints.length]);
 
+  const calculateSurface = useCallback(() => {
+    if (savedPoints.length < 3) {
+      Alert.alert('Points insuffisants', 'Ajoutez au moins 3 points pour calculer la superficie.');
+      return;
+    }
+
+    const areaM2 = calculateAreaM2(savedPoints);
+    const areaHa = m2ToHectares(areaM2);
+    const perimeterM = calculatePerimeterM(savedPoints);
+    const averageAccuracy = calculateAverageAccuracy(savedPoints);
+    const minAccuracy = calculateMinAccuracy(savedPoints);
+    const maxAccuracy = calculateMaxAccuracy(savedPoints);
+
+    navigation.navigate('Result', {
+      measurementInfo,
+      points: savedPoints,
+      areaM2,
+      areaHa,
+      perimeterM,
+      averageAccuracy,
+      minAccuracy,
+      maxAccuracy,
+      createdAt: new Date().toISOString(),
+    });
+  }, [measurementInfo, navigation, savedPoints]);
+
   const accuracy = currentPosition?.coords?.accuracy;
   const accuracyBadge = useMemo(() => {
     if (isLoadingPosition) {
@@ -290,12 +324,12 @@ export default function MeasureMapScreen({ navigation, route }) {
       </View>
 
       <InfoCard
-        title="Collecte GPS uniquement"
-        description="Les points GPS du terrain peuvent maintenant être enregistrés manuellement. Aucun calcul de superficie ou de périmètre n’est lancé pour le moment."
+        title="Calcul disponible"
+        description="Dès que 3 points GPS au minimum sont enregistrés, calculez la superficie et le périmètre du terrain."
       />
 
       <View style={screenStyles.buttonGroup}>
-        <PrimaryButton label="Voir le résultat de test" onPress={() => navigation.navigate('Result')} />
+        <PrimaryButton label="Calculer la superficie" onPress={calculateSurface} />
         <PrimaryButton label="Annuler" onPress={() => navigation.navigate('Home')} variant="secondary" />
       </View>
     </ScrollView>
