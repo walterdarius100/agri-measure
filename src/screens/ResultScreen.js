@@ -1,8 +1,10 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import InfoCard from '../components/InfoCard';
 import PrimaryButton from '../components/PrimaryButton';
 import colors from '../constants/colors';
+import { saveMeasurement } from '../utils/storage';
 import screenStyles from './screenStyles';
 
 function formatText(value) {
@@ -49,14 +51,59 @@ function ResultRow({ label, value }) {
 
 export default function ResultScreen({ navigation, route }) {
   const result = route.params ?? {};
+  const isHistoryMode = result.readOnly === true || result.source === 'history';
   const measurementInfo = result.measurementInfo ?? {};
   const pointsCount = Array.isArray(result.points) ? result.points.length : 0;
   const shouldShowAccuracyWarning = Number.isFinite(result.averageAccuracy) && result.averageAccuracy > 10;
+  const [hasSavedInSession, setHasSavedInSession] = useState(isHistoryMode);
+  const [isSaving, setIsSaving] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+
+  useEffect(() => {
+    setHasSavedInSession(isHistoryMode);
+    setSuccessMessage('');
+  }, [isHistoryMode, result.createdAt, result.id]);
+
+  const handleSaveMeasurement = async () => {
+    if (hasSavedInSession || isHistoryMode) {
+      return;
+    }
+
+    setIsSaving(true);
+    setSuccessMessage('');
+
+    try {
+      await saveMeasurement({
+        id: result.id,
+        createdAt: result.createdAt,
+        measurementInfo,
+        points: Array.isArray(result.points) ? result.points : [],
+        areaM2: result.areaM2,
+        areaHa: result.areaHa,
+        perimeterM: result.perimeterM,
+        averageAccuracy: result.averageAccuracy,
+        minAccuracy: result.minAccuracy,
+        maxAccuracy: result.maxAccuracy,
+      });
+      setHasSavedInSession(true);
+      setSuccessMessage('Mesure enregistrée avec succès.');
+    } catch {
+      Alert.alert('Sauvegarde impossible', 'La mesure n’a pas pu être enregistrée. Réessayez plus tard.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <ScrollView contentContainerStyle={screenStyles.content} style={screenStyles.container}>
       <Text style={screenStyles.title}>Résultat</Text>
       <Text style={screenStyles.subtitle}>Superficie et périmètre calculés à partir des points GPS enregistrés.</Text>
+
+      {isHistoryMode ? (
+        <View style={styles.readOnlyCard}>
+          <Text style={styles.readOnlyText}>Mesure sauvegardée ouverte depuis l’historique.</Text>
+        </View>
+      ) : null}
 
       <InfoCard title="Informations de la mesure">
         <ResultRow label="Nom du client" value={formatText(measurementInfo.clientName)} />
@@ -95,9 +142,23 @@ export default function ResultScreen({ navigation, route }) {
         </View>
       ) : null}
 
+      {successMessage ? (
+        <View style={styles.successCard}>
+          <Text style={styles.successText}>{successMessage}</Text>
+        </View>
+      ) : null}
+
       <View style={screenStyles.buttonGroup}>
-        <PrimaryButton label="Nouvelle mesure" onPress={() => navigation.navigate('NewMeasurement')} />
-        <PrimaryButton label="Accueil" onPress={() => navigation.navigate('Home')} variant="secondary" />
+        {!isHistoryMode ? (
+          <PrimaryButton
+            disabled={hasSavedInSession || isSaving}
+            label={hasSavedInSession ? 'Mesure enregistrée' : 'Enregistrer la mesure'}
+            onPress={handleSaveMeasurement}
+          />
+        ) : null}
+        <PrimaryButton label="Voir l’historique" onPress={() => navigation.navigate('History')} variant="secondary" />
+        <PrimaryButton label="Nouvelle mesure" onPress={() => navigation.navigate('NewMeasurement')} variant="secondary" />
+        <PrimaryButton label="Retour à l’accueil" onPress={() => navigation.navigate('Home')} variant="secondary" />
       </View>
     </ScrollView>
   );
@@ -111,6 +172,19 @@ const styles = StyleSheet.create({
   resultValue: {
     color: colors.text,
     fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 22,
+  },
+  readOnlyCard: {
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 14,
+  },
+  readOnlyText: {
+    color: colors.primaryDark,
+    fontSize: 15,
     fontWeight: '700',
     lineHeight: 22,
   },
@@ -139,5 +213,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     lineHeight: 23,
+  },
+  successCard: {
+    backgroundColor: '#E7F6EC',
+    borderColor: colors.primary,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 16,
+  },
+  successText: {
+    color: colors.primaryDark,
+    fontSize: 15,
+    fontWeight: '800',
+    lineHeight: 22,
   },
 });
