@@ -1,82 +1,83 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
-import * as Print from 'expo-print';
-import * as Sharing from 'expo-sharing';
+import { useEffect, useMemo, useState } from "react";
+import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 
-import InfoCard from '../components/InfoCard';
-import PrimaryButton from '../components/PrimaryButton';
-import colors from '../constants/colors';
-import { saveMeasurement } from '../utils/storage';
-import { analyzeMeasurementQuality } from '../utils/qualityUtils';
-import screenStyles from './screenStyles';
+import InfoCard from "../components/InfoCard";
+import PrimaryButton from "../components/PrimaryButton";
+import colors from "../constants/colors";
+import { saveMeasurement } from "../utils/storage";
+import { analyzeMeasurementQuality } from "../utils/qualityUtils";
+import { calculateSegmentDistances } from "../utils/geoUtils";
+import screenStyles from "./screenStyles";
 
 const PRECISION_WARNING =
-  'Mesure indicative réalisée avec GPS mobile. Elle dépend de la précision du signal et ne remplace pas une mesure topographique ou cadastrale officielle.';
+  "Mesure indicative réalisée avec GPS mobile. Elle dépend de la précision du signal et ne remplace pas une mesure topographique ou cadastrale officielle.";
 
 function formatText(value) {
-  return value ? String(value) : 'Non renseigné';
+  return value ? String(value) : "Non renseigné";
 }
 
 function formatNumber(value, fractionDigits = 2) {
   if (!Number.isFinite(value)) {
-    return 'Indisponible';
+    return "Indisponible";
   }
 
-  return value.toLocaleString('fr-FR', {
+  return value.toLocaleString("fr-FR", {
     maximumFractionDigits: fractionDigits,
     minimumFractionDigits: fractionDigits,
   });
 }
 
 function formatMeters(value) {
-  return Number.isFinite(value) ? `${formatNumber(value)} m` : 'Indisponible';
+  return Number.isFinite(value) ? `${formatNumber(value)} m` : "Indisponible";
 }
 
 function formatDate(value) {
   if (!value) {
-    return 'Indisponible';
+    return "Indisponible";
   }
 
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
-    return 'Indisponible';
+    return "Indisponible";
   }
 
-  return date.toLocaleString('fr-FR');
+  return date.toLocaleString("fr-FR");
 }
 
 function formatCoordinate(value) {
-  return Number.isFinite(value) ? value.toFixed(7) : 'Indisponible';
+  return Number.isFinite(value) ? value.toFixed(7) : "Indisponible";
 }
 
 function formatPointTimestamp(value) {
-  if (typeof value === 'number' || typeof value === 'string') {
+  if (typeof value === "number" || typeof value === "string") {
     return formatDate(value);
   }
 
-  return 'Indisponible';
+  return "Indisponible";
 }
 
 function escapeHtml(value) {
   return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function getQualityColor(qualityLevel) {
-  if (qualityLevel === 'good') {
+  if (qualityLevel === "good") {
     return colors.primary;
   }
 
-  if (qualityLevel === 'acceptable') {
+  if (qualityLevel === "acceptable") {
     return colors.warning;
   }
 
-  if (qualityLevel === 'weak') {
+  if (qualityLevel === "weak") {
     return colors.danger;
   }
 
@@ -99,12 +100,34 @@ function PointRow({ index, point }) {
       <ResultRow label="Latitude" value={formatCoordinate(point?.latitude)} />
       <ResultRow label="Longitude" value={formatCoordinate(point?.longitude)} />
       <ResultRow label="Précision" value={formatMeters(point?.accuracy)} />
-      <ResultRow label="Horodatage" value={formatPointTimestamp(point?.timestamp)} />
+      <ResultRow
+        label="Horodatage"
+        value={formatPointTimestamp(point?.timestamp)}
+      />
     </View>
   );
 }
 
-function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, result, shouldShowAccuracyWarning }) {
+function SegmentDistanceRow({ segment }) {
+  return (
+    <View style={styles.segmentRow}>
+      <Text style={styles.segmentText}>
+        Point {segment.from} → Point {segment.to} :{" "}
+        {formatMeters(segment.distanceM)}
+      </Text>
+    </View>
+  );
+}
+
+function buildPdfHtml({
+  generatedAt,
+  measurementInfo,
+  points,
+  qualityReport,
+  result,
+  segmentDistances,
+  shouldShowAccuracyWarning,
+}) {
   const pointRows = points.length
     ? points
         .map(
@@ -118,8 +141,22 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, res
             </tr>
           `,
         )
-        .join('')
+        .join("")
     : '<tr><td colspan="5">Aucun point GPS disponible.</td></tr>';
+
+  const segmentRows = segmentDistances.length
+    ? segmentDistances
+        .map(
+          (segment) => `
+            <tr>
+              <td>Point ${segment.from}</td>
+              <td>Point ${segment.to}</td>
+              <td>${escapeHtml(formatMeters(segment.distanceM))}</td>
+            </tr>
+          `,
+        )
+        .join("")
+    : '<tr><td colspan="3">Distances indisponibles.</td></tr>';
 
   return `
     <!DOCTYPE html>
@@ -275,8 +312,21 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, res
           </div>
         </section>
 
+
         <section class="section">
-          <h2>4. Rapport qualité GPS</h2>
+          <h2>4. Distances des côtés du terrain</h2>
+          <div class="content">
+            <table>
+              <thead>
+                <tr><th>De</th><th>À</th><th>Distance</th></tr>
+              </thead>
+              <tbody>${segmentRows}</tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>5. Rapport qualité GPS</h2>
           <div class="content grid">
             <div><div class="item-label">Précision moyenne GPS</div><div class="item-value">${escapeHtml(formatMeters(result.averageAccuracy))}</div></div>
             <div><div class="item-label">Meilleure précision GPS</div><div class="item-value">${escapeHtml(formatMeters(result.minAccuracy))}</div></div>
@@ -285,7 +335,7 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, res
         </section>
 
         <section class="section">
-          <h2>5. Rapport qualité terrain</h2>
+          <h2>6. Rapport qualité terrain</h2>
           <div class="content">
             <div class="quality-badge" style="background: ${escapeHtml(getQualityColor(qualityReport.qualityLevel))};">Qualité générale : ${escapeHtml(qualityReport.qualityLabel)}</div>
             <p class="quality-message">${escapeHtml(qualityReport.qualityMessage)}</p>
@@ -301,11 +351,11 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, res
         ${
           shouldShowAccuracyWarning
             ? '<div class="warning">Avertissement : la précision moyenne GPS est supérieure à 10 m. Interprétez cette mesure avec prudence.</div>'
-            : ''
+            : ""
         }
 
         <section class="section">
-          <h2>6. Points GPS</h2>
+          <h2>7. Points GPS</h2>
           <div class="content">
             <table>
               <thead>
@@ -317,7 +367,7 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, res
         </section>
 
         <section class="section">
-          <h2>7. Avertissement</h2>
+          <h2>8. Avertissement</h2>
           <div class="content legal">${escapeHtml(PRECISION_WARNING)}</div>
         </section>
       </body>
@@ -327,24 +377,37 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, res
 
 export default function ResultScreen({ navigation, route }) {
   const result = route.params ?? {};
-  const isHistoryMode = result.readOnly === true || result.source === 'history';
+  const isHistoryMode = result.readOnly === true || result.source === "history";
   const measurementInfo = result.measurementInfo ?? {};
-  const points = useMemo(() => (Array.isArray(result.points) ? result.points : []), [result.points]);
+  const points = useMemo(
+    () => (Array.isArray(result.points) ? result.points : []),
+    [result.points],
+  );
   const pointsCount = points.length;
+  const segmentDistances = useMemo(
+    () => calculateSegmentDistances(points),
+    [points],
+  );
   const qualityReport = useMemo(
-    () => analyzeMeasurementQuality(points, result.averageAccuracy, result.maxAccuracy),
+    () =>
+      analyzeMeasurementQuality(
+        points,
+        result.averageAccuracy,
+        result.maxAccuracy,
+      ),
     [points, result.averageAccuracy, result.maxAccuracy],
   );
   const qualityColor = getQualityColor(qualityReport.qualityLevel);
-  const shouldShowAccuracyWarning = Number.isFinite(result.averageAccuracy) && result.averageAccuracy > 10;
+  const shouldShowAccuracyWarning =
+    Number.isFinite(result.averageAccuracy) && result.averageAccuracy > 10;
   const [hasSavedInSession, setHasSavedInSession] = useState(isHistoryMode);
   const [isSaving, setIsSaving] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
-  const [successMessage, setSuccessMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState("");
 
   useEffect(() => {
     setHasSavedInSession(isHistoryMode);
-    setSuccessMessage('');
+    setSuccessMessage("");
   }, [isHistoryMode, result.createdAt, result.id]);
 
   const handleSaveMeasurement = async () => {
@@ -353,7 +416,7 @@ export default function ResultScreen({ navigation, route }) {
     }
 
     setIsSaving(true);
-    setSuccessMessage('');
+    setSuccessMessage("");
 
     try {
       await saveMeasurement({
@@ -369,9 +432,12 @@ export default function ResultScreen({ navigation, route }) {
         maxAccuracy: result.maxAccuracy,
       });
       setHasSavedInSession(true);
-      setSuccessMessage('Mesure enregistrée avec succès.');
+      setSuccessMessage("Mesure enregistrée avec succès.");
     } catch {
-      Alert.alert('Sauvegarde impossible', 'La mesure n’a pas pu être enregistrée. Réessayez plus tard.');
+      Alert.alert(
+        "Sauvegarde impossible",
+        "La mesure n’a pas pu être enregistrée. Réessayez plus tard.",
+      );
     } finally {
       setIsSaving(false);
     }
@@ -391,6 +457,7 @@ export default function ResultScreen({ navigation, route }) {
         points,
         qualityReport,
         result,
+        segmentDistances,
         shouldShowAccuracyWarning,
       });
       const { uri } = await Print.printToFileAsync({ html });
@@ -398,75 +465,121 @@ export default function ResultScreen({ navigation, route }) {
 
       if (!isSharingAvailable) {
         Alert.alert(
-          'Partage indisponible',
-          'Le PDF a été généré, mais le partage n’est pas disponible sur cet appareil ou dans cet environnement.',
+          "Partage indisponible",
+          "Le PDF a été généré, mais le partage n’est pas disponible sur cet appareil ou dans cet environnement.",
         );
         return;
       }
 
       await Sharing.shareAsync(uri, {
-        dialogTitle: 'Partager la fiche de mesure Agri-tech',
-        mimeType: 'application/pdf',
-        UTI: 'com.adobe.pdf',
+        dialogTitle: "Partager la fiche de mesure Agri-tech",
+        mimeType: "application/pdf",
+        UTI: "com.adobe.pdf",
       });
     } catch {
-      Alert.alert('Export PDF impossible', 'La fiche terrain PDF n’a pas pu être générée ou partagée. Réessayez plus tard.');
+      Alert.alert(
+        "Export PDF impossible",
+        "La fiche terrain PDF n’a pas pu être générée ou partagée. Réessayez plus tard.",
+      );
     } finally {
       setIsExportingPdf(false);
     }
   };
 
   return (
-    <ScrollView contentContainerStyle={screenStyles.content} style={screenStyles.container}>
+    <ScrollView
+      contentContainerStyle={screenStyles.content}
+      style={screenStyles.container}
+    >
       <View style={styles.headerCard}>
         <Text style={styles.brand}>Agri-tech</Text>
         <Text style={styles.mainTitle}>FICHE DE MESURE DE TERRAIN</Text>
-        <Text style={styles.headerSubtitle}>Rapport terrain professionnel généré à partir des points GPS enregistrés.</Text>
+        <Text style={styles.headerSubtitle}>
+          Rapport terrain professionnel généré à partir des points GPS
+          enregistrés.
+        </Text>
       </View>
 
       {isHistoryMode ? (
         <View style={styles.readOnlyCard}>
-          <Text style={styles.readOnlyText}>Mesure sauvegardée ouverte depuis l’historique.</Text>
+          <Text style={styles.readOnlyText}>
+            Mesure sauvegardée ouverte depuis l’historique.
+          </Text>
         </View>
       ) : null}
 
       <InfoCard title="1. Informations client">
-        <ResultRow label="Nom du client" value={formatText(measurementInfo.clientName)} />
-        <ResultRow label="Téléphone" value={formatText(measurementInfo.phone)} />
-        <ResultRow label="Localisation / zone" value={formatText(measurementInfo.locationName)} />
+        <ResultRow
+          label="Nom du client"
+          value={formatText(measurementInfo.clientName)}
+        />
+        <ResultRow
+          label="Téléphone"
+          value={formatText(measurementInfo.phone)}
+        />
+        <ResultRow
+          label="Localisation / zone"
+          value={formatText(measurementInfo.locationName)}
+        />
       </InfoCard>
 
       <InfoCard title="2. Informations du projet">
-        <ResultRow label="Type de projet agricole" value={formatText(measurementInfo.projectType)} />
-        <ResultRow label="Notes terrain" value={formatText(measurementInfo.notes)} />
-        <ResultRow label="Date de mesure" value={formatDate(result.createdAt)} />
+        <ResultRow
+          label="Type de projet agricole"
+          value={formatText(measurementInfo.projectType)}
+        />
+        <ResultRow
+          label="Notes terrain"
+          value={formatText(measurementInfo.notes)}
+        />
+        <ResultRow
+          label="Date de mesure"
+          value={formatDate(result.createdAt)}
+        />
       </InfoCard>
 
       <InfoCard title="3. Résultats de mesure">
         <View style={styles.metricsGrid}>
           <View style={styles.metricCard}>
             <Text style={styles.metricLabel}>Superficie</Text>
-            <Text style={styles.metricValue}>{formatNumber(result.areaM2)}</Text>
+            <Text style={styles.metricValue}>
+              {formatNumber(result.areaM2)}
+            </Text>
             <Text style={styles.metricUnit}>m²</Text>
           </View>
           <View style={styles.metricCard}>
             <Text style={styles.metricLabel}>Superficie</Text>
-            <Text style={styles.metricValue}>{formatNumber(result.areaHa, 4)}</Text>
+            <Text style={styles.metricValue}>
+              {formatNumber(result.areaHa, 4)}
+            </Text>
             <Text style={styles.metricUnit}>ha</Text>
           </View>
         </View>
-        <ResultRow label="Périmètre en mètres" value={formatMeters(result.perimeterM)} />
+        <ResultRow
+          label="Périmètre en mètres"
+          value={formatMeters(result.perimeterM)}
+        />
         <ResultRow label="Nombre de points GPS" value={`${pointsCount}`} />
       </InfoCard>
 
       <InfoCard title="4. Rapport qualité GPS">
-        <ResultRow label="Précision moyenne GPS" value={formatMeters(result.averageAccuracy)} />
-        <ResultRow label="Meilleure précision GPS" value={formatMeters(result.minAccuracy)} />
-        <ResultRow label="Plus mauvaise précision GPS" value={formatMeters(result.maxAccuracy)} />
+        <ResultRow
+          label="Précision moyenne GPS"
+          value={formatMeters(result.averageAccuracy)}
+        />
+        <ResultRow
+          label="Meilleure précision GPS"
+          value={formatMeters(result.minAccuracy)}
+        />
+        <ResultRow
+          label="Plus mauvaise précision GPS"
+          value={formatMeters(result.maxAccuracy)}
+        />
         {shouldShowAccuracyWarning ? (
           <View style={styles.inlineWarningCard}>
             <Text style={styles.inlineWarningText}>
-              Avertissement : la précision moyenne GPS est supérieure à 10 m. Interprétez cette mesure avec prudence.
+              Avertissement : la précision moyenne GPS est supérieure à 10 m.
+              Interprétez cette mesure avec prudence.
             </Text>
           </View>
         ) : null}
@@ -474,25 +587,64 @@ export default function ResultScreen({ navigation, route }) {
 
       <InfoCard title="5. Rapport qualité terrain">
         <View style={[styles.qualityHeader, { borderColor: qualityColor }]}>
-          <Text style={[styles.qualityLabel, { color: qualityColor }]}>Qualité générale : {qualityReport.qualityLabel}</Text>
+          <Text style={[styles.qualityLabel, { color: qualityColor }]}>
+            Qualité générale : {qualityReport.qualityLabel}
+          </Text>
         </View>
-        <ResultRow label="Message qualité" value={qualityReport.qualityMessage} />
-        <ResultRow label="Recommandation" value={qualityReport.recommendation} />
-        <ResultRow label="Nombre total de points GPS" value={`${qualityReport.totalPoints}`} />
-        <ResultRow label="Nombre de points avec précision faible > 10 m" value={`${qualityReport.weakPointsCount}`} />
-        <ResultRow label="Nombre de points avec précision très faible > 15 m" value={`${qualityReport.veryWeakPointsCount}`} />
+        <ResultRow
+          label="Message qualité"
+          value={qualityReport.qualityMessage}
+        />
+        <ResultRow
+          label="Recommandation"
+          value={qualityReport.recommendation}
+        />
+        <ResultRow
+          label="Nombre total de points GPS"
+          value={`${qualityReport.totalPoints}`}
+        />
+        <ResultRow
+          label="Nombre de points avec précision faible > 10 m"
+          value={`${qualityReport.weakPointsCount}`}
+        />
+        <ResultRow
+          label="Nombre de points avec précision très faible > 15 m"
+          value={`${qualityReport.veryWeakPointsCount}`}
+        />
       </InfoCard>
 
-      <InfoCard title="6. Points GPS" description="Coordonnées collectées pendant la mesure terrain.">
+      {segmentDistances.length >= 1 ? (
+        <InfoCard title="6. Distances des côtés">
+          {segmentDistances.map((segment) => (
+            <SegmentDistanceRow
+              key={`segment-${segment.from}-${segment.to}`}
+              segment={segment}
+            />
+          ))}
+        </InfoCard>
+      ) : null}
+
+      <InfoCard
+        title="7. Points GPS"
+        description="Coordonnées collectées pendant la mesure terrain."
+      >
         {points.length ? (
-          points.map((point, index) => <PointRow key={`${point?.timestamp ?? index}-${index}`} index={index} point={point} />)
+          points.map((point, index) => (
+            <PointRow
+              key={`${point?.timestamp ?? index}-${index}`}
+              index={index}
+              point={point}
+            />
+          ))
         ) : (
-          <Text style={styles.emptyPointsText}>Aucun point GPS disponible.</Text>
+          <Text style={styles.emptyPointsText}>
+            Aucun point GPS disponible.
+          </Text>
         )}
       </InfoCard>
 
       <View style={styles.noticeCard}>
-        <Text style={styles.noticeTitle}>7. Avertissement</Text>
+        <Text style={styles.noticeTitle}>8. Avertissement</Text>
         <Text style={styles.noticeText}>{PRECISION_WARNING}</Text>
       </View>
 
@@ -505,20 +657,34 @@ export default function ResultScreen({ navigation, route }) {
       <View style={screenStyles.buttonGroup}>
         <PrimaryButton
           disabled={isExportingPdf}
-          label={isExportingPdf ? 'Export PDF en cours…' : 'Exporter en PDF'}
+          label={isExportingPdf ? "Export PDF en cours…" : "Exporter en PDF"}
           onPress={handleExportPdf}
         />
         {!isHistoryMode ? (
           <PrimaryButton
             disabled={hasSavedInSession || isSaving}
-            label={hasSavedInSession ? 'Mesure enregistrée' : 'Enregistrer la mesure'}
+            label={
+              hasSavedInSession ? "Mesure enregistrée" : "Enregistrer la mesure"
+            }
             onPress={handleSaveMeasurement}
             variant="secondary"
           />
         ) : null}
-        <PrimaryButton label="Voir l’historique" onPress={() => navigation.navigate('History')} variant="secondary" />
-        <PrimaryButton label="Nouvelle mesure" onPress={() => navigation.navigate('NewMeasurement')} variant="secondary" />
-        <PrimaryButton label="Retour à l’accueil" onPress={() => navigation.navigate('Home')} variant="secondary" />
+        <PrimaryButton
+          label="Voir l’historique"
+          onPress={() => navigation.navigate("History")}
+          variant="secondary"
+        />
+        <PrimaryButton
+          label="Nouvelle mesure"
+          onPress={() => navigation.navigate("NewMeasurement")}
+          variant="secondary"
+        />
+        <PrimaryButton
+          label="Retour à l’accueil"
+          onPress={() => navigation.navigate("Home")}
+          variant="secondary"
+        />
       </View>
     </ScrollView>
   );
@@ -532,20 +698,20 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   brand: {
-    color: '#BEE3C8',
+    color: "#BEE3C8",
     fontSize: 15,
-    fontWeight: '900',
+    fontWeight: "900",
     letterSpacing: 1.4,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
   },
   mainTitle: {
     color: colors.surface,
     fontSize: 27,
-    fontWeight: '900',
+    fontWeight: "900",
     lineHeight: 34,
   },
   headerSubtitle: {
-    color: '#E7F6EC',
+    color: "#E7F6EC",
     fontSize: 15,
     lineHeight: 22,
   },
@@ -556,11 +722,11 @@ const styles = StyleSheet.create({
   resultValue: {
     color: colors.text,
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: "700",
     lineHeight: 22,
   },
   metricsGrid: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 10,
   },
   metricCard: {
@@ -574,20 +740,20 @@ const styles = StyleSheet.create({
   metricLabel: {
     color: colors.muted,
     fontSize: 12,
-    fontWeight: '800',
-    textTransform: 'uppercase',
+    fontWeight: "800",
+    textTransform: "uppercase",
   },
   metricValue: {
     color: colors.primaryDark,
     fontSize: 23,
-    fontWeight: '900',
+    fontWeight: "900",
     lineHeight: 30,
     marginTop: 6,
   },
   metricUnit: {
     color: colors.text,
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: "800",
   },
   qualityHeader: {
     backgroundColor: colors.surfaceAlt,
@@ -598,8 +764,22 @@ const styles = StyleSheet.create({
   },
   qualityLabel: {
     fontSize: 17,
-    fontWeight: '900',
+    fontWeight: "900",
     lineHeight: 23,
+  },
+
+  segmentRow: {
+    backgroundColor: colors.surfaceAlt,
+    borderColor: colors.border,
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+  },
+  segmentText: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "800",
+    lineHeight: 21,
   },
   pointRow: {
     backgroundColor: colors.surfaceAlt,
@@ -612,12 +792,12 @@ const styles = StyleSheet.create({
   pointTitle: {
     color: colors.primaryDark,
     fontSize: 16,
-    fontWeight: '900',
+    fontWeight: "900",
   },
   emptyPointsText: {
     color: colors.muted,
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: "700",
     lineHeight: 22,
   },
   readOnlyCard: {
@@ -630,7 +810,7 @@ const styles = StyleSheet.create({
   readOnlyText: {
     color: colors.primaryDark,
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: "700",
     lineHeight: 22,
   },
   noticeCard: {
@@ -643,17 +823,17 @@ const styles = StyleSheet.create({
   noticeTitle: {
     color: colors.primaryDark,
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: "900",
     marginBottom: 8,
   },
   noticeText: {
     color: colors.primaryDark,
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: "700",
     lineHeight: 22,
   },
   inlineWarningCard: {
-    backgroundColor: '#FFF3CD',
+    backgroundColor: "#FFF3CD",
     borderColor: colors.warning,
     borderRadius: 14,
     borderWidth: 1,
@@ -662,11 +842,11 @@ const styles = StyleSheet.create({
   inlineWarningText: {
     color: colors.danger,
     fontSize: 14,
-    fontWeight: '800',
+    fontWeight: "800",
     lineHeight: 20,
   },
   successCard: {
-    backgroundColor: '#E7F6EC',
+    backgroundColor: "#E7F6EC",
     borderColor: colors.primary,
     borderRadius: 18,
     borderWidth: 1,
@@ -675,7 +855,7 @@ const styles = StyleSheet.create({
   successText: {
     color: colors.primaryDark,
     fontSize: 15,
-    fontWeight: '800',
+    fontWeight: "800",
     lineHeight: 22,
   },
 });
