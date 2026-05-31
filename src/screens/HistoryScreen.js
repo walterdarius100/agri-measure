@@ -6,6 +6,7 @@ import InfoCard from '../components/InfoCard';
 import PrimaryButton from '../components/PrimaryButton';
 import colors from '../constants/colors';
 import { deleteMeasurement, getMeasurements } from '../utils/storage';
+import { analyzeMeasurementQuality } from '../utils/qualityUtils';
 import screenStyles from './screenStyles';
 
 function formatText(value) {
@@ -112,6 +113,11 @@ export default function HistoryScreen({ navigation }) {
         <View style={styles.list}>
           {measurements.map((measurement) => {
             const measurementInfo = measurement.measurementInfo ?? {};
+            const qualityReport = analyzeMeasurementQuality(
+              measurement.points,
+              measurement.averageAccuracy,
+              measurement.maxAccuracy,
+            );
 
             return (
               <InfoCard key={measurement.id} title={formatText(measurementInfo.clientName)}>
@@ -122,6 +128,7 @@ export default function HistoryScreen({ navigation }) {
                 <HistoryRow label="Superficie en hectares" value={`${formatNumber(measurement.areaHa, 4)} ha`} />
                 <HistoryRow label="Périmètre en mètres" value={formatMeters(measurement.perimeterM)} />
                 <HistoryRow label="Précision moyenne GPS" value={formatMeters(measurement.averageAccuracy)} />
+                <HistoryRow label="Qualité terrain" value={qualityReport.qualityLabel} />
 
                 <View style={styles.actions}>
                   <PrimaryButton label="Ouvrir la mesure" onPress={() => openMeasurement(measurement)} />

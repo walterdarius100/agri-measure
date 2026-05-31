@@ -7,6 +7,7 @@ import InfoCard from '../components/InfoCard';
 import PrimaryButton from '../components/PrimaryButton';
 import colors from '../constants/colors';
 import { saveMeasurement } from '../utils/storage';
+import { analyzeMeasurementQuality } from '../utils/qualityUtils';
 import screenStyles from './screenStyles';
 
 const PRECISION_WARNING =
@@ -66,6 +67,22 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function getQualityColor(qualityLevel) {
+  if (qualityLevel === 'good') {
+    return colors.primary;
+  }
+
+  if (qualityLevel === 'acceptable') {
+    return colors.warning;
+  }
+
+  if (qualityLevel === 'weak') {
+    return colors.danger;
+  }
+
+  return colors.muted;
+}
+
 function ResultRow({ label, value }) {
   return (
     <View style={styles.resultRow}>
@@ -87,7 +104,7 @@ function PointRow({ index, point }) {
   );
 }
 
-function buildPdfHtml({ generatedAt, measurementInfo, points, result, shouldShowAccuracyWarning }) {
+function buildPdfHtml({ generatedAt, measurementInfo, points, qualityReport, result, shouldShowAccuracyWarning }) {
   const pointRows = points.length
     ? points
         .map(
@@ -172,6 +189,21 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, result, shouldShow
             margin-top: 2px;
             white-space: pre-wrap;
           }
+          .quality-badge {
+            border-radius: 8px;
+            color: #ffffff;
+            display: inline-block;
+            font-size: 13px;
+            font-weight: 800;
+            margin-bottom: 8px;
+            padding: 7px 10px;
+          }
+          .quality-message {
+            color: #1f2933;
+            font-size: 13px;
+            font-weight: 700;
+            margin: 0 0 8px;
+          }
           .warning {
             background: #fff8e1;
             border: 1px solid #f2c94c;
@@ -252,6 +284,20 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, result, shouldShow
           </div>
         </section>
 
+        <section class="section">
+          <h2>5. Rapport qualité terrain</h2>
+          <div class="content">
+            <div class="quality-badge" style="background: ${escapeHtml(getQualityColor(qualityReport.qualityLevel))};">Qualité générale : ${escapeHtml(qualityReport.qualityLabel)}</div>
+            <p class="quality-message">${escapeHtml(qualityReport.qualityMessage)}</p>
+            <p class="quality-message">Recommandation : ${escapeHtml(qualityReport.recommendation)}</p>
+            <div class="grid">
+              <div><div class="item-label">Nombre total de points GPS</div><div class="item-value">${qualityReport.totalPoints}</div></div>
+              <div><div class="item-label">Points avec précision &gt; 10 m</div><div class="item-value">${qualityReport.weakPointsCount}</div></div>
+              <div><div class="item-label">Points avec précision &gt; 15 m</div><div class="item-value">${qualityReport.veryWeakPointsCount}</div></div>
+            </div>
+          </div>
+        </section>
+
         ${
           shouldShowAccuracyWarning
             ? '<div class="warning">Avertissement : la précision moyenne GPS est supérieure à 10 m. Interprétez cette mesure avec prudence.</div>'
@@ -259,7 +305,7 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, result, shouldShow
         }
 
         <section class="section">
-          <h2>5. Points GPS</h2>
+          <h2>6. Points GPS</h2>
           <div class="content">
             <table>
               <thead>
@@ -271,7 +317,7 @@ function buildPdfHtml({ generatedAt, measurementInfo, points, result, shouldShow
         </section>
 
         <section class="section">
-          <h2>6. Avertissement</h2>
+          <h2>7. Avertissement</h2>
           <div class="content legal">${escapeHtml(PRECISION_WARNING)}</div>
         </section>
       </body>
@@ -285,6 +331,11 @@ export default function ResultScreen({ navigation, route }) {
   const measurementInfo = result.measurementInfo ?? {};
   const points = useMemo(() => (Array.isArray(result.points) ? result.points : []), [result.points]);
   const pointsCount = points.length;
+  const qualityReport = useMemo(
+    () => analyzeMeasurementQuality(points, result.averageAccuracy, result.maxAccuracy),
+    [points, result.averageAccuracy, result.maxAccuracy],
+  );
+  const qualityColor = getQualityColor(qualityReport.qualityLevel);
   const shouldShowAccuracyWarning = Number.isFinite(result.averageAccuracy) && result.averageAccuracy > 10;
   const [hasSavedInSession, setHasSavedInSession] = useState(isHistoryMode);
   const [isSaving, setIsSaving] = useState(false);
@@ -338,6 +389,7 @@ export default function ResultScreen({ navigation, route }) {
         generatedAt: new Date().toISOString(),
         measurementInfo,
         points,
+        qualityReport,
         result,
         shouldShowAccuracyWarning,
       });
@@ -420,7 +472,18 @@ export default function ResultScreen({ navigation, route }) {
         ) : null}
       </InfoCard>
 
-      <InfoCard title="5. Points GPS" description="Coordonnées collectées pendant la mesure terrain.">
+      <InfoCard title="5. Rapport qualité terrain">
+        <View style={[styles.qualityHeader, { borderColor: qualityColor }]}>
+          <Text style={[styles.qualityLabel, { color: qualityColor }]}>Qualité générale : {qualityReport.qualityLabel}</Text>
+        </View>
+        <ResultRow label="Message qualité" value={qualityReport.qualityMessage} />
+        <ResultRow label="Recommandation" value={qualityReport.recommendation} />
+        <ResultRow label="Nombre total de points GPS" value={`${qualityReport.totalPoints}`} />
+        <ResultRow label="Nombre de points avec précision faible > 10 m" value={`${qualityReport.weakPointsCount}`} />
+        <ResultRow label="Nombre de points avec précision très faible > 15 m" value={`${qualityReport.veryWeakPointsCount}`} />
+      </InfoCard>
+
+      <InfoCard title="6. Points GPS" description="Coordonnées collectées pendant la mesure terrain.">
         {points.length ? (
           points.map((point, index) => <PointRow key={`${point?.timestamp ?? index}-${index}`} index={index} point={point} />)
         ) : (
@@ -429,7 +492,7 @@ export default function ResultScreen({ navigation, route }) {
       </InfoCard>
 
       <View style={styles.noticeCard}>
-        <Text style={styles.noticeTitle}>6. Avertissement</Text>
+        <Text style={styles.noticeTitle}>7. Avertissement</Text>
         <Text style={styles.noticeText}>{PRECISION_WARNING}</Text>
       </View>
 
@@ -525,6 +588,18 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 14,
     fontWeight: '800',
+  },
+  qualityHeader: {
+    backgroundColor: colors.surfaceAlt,
+    borderLeftWidth: 5,
+    borderRadius: 14,
+    marginBottom: 6,
+    padding: 12,
+  },
+  qualityLabel: {
+    fontSize: 17,
+    fontWeight: '900',
+    lineHeight: 23,
   },
   pointRow: {
     backgroundColor: colors.surfaceAlt,
