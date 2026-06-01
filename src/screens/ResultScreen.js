@@ -84,6 +84,109 @@ function getQualityColor(qualityLevel) {
   return colors.muted;
 }
 
+function normalizeSketchPoints(
+  points,
+  width = 500,
+  height = 350,
+  padding = 34,
+) {
+  const validPoints = points
+    .map((point, index) => ({
+      index,
+      latitude: Number(point?.latitude),
+      longitude: Number(point?.longitude),
+    }))
+    .filter(
+      (point) =>
+        Number.isFinite(point.latitude) && Number.isFinite(point.longitude),
+    );
+
+  if (!validPoints.length) {
+    return [];
+  }
+
+  const latitudes = validPoints.map((point) => point.latitude);
+  const longitudes = validPoints.map((point) => point.longitude);
+  const minLatitude = Math.min(...latitudes);
+  const maxLatitude = Math.max(...latitudes);
+  const minLongitude = Math.min(...longitudes);
+  const maxLongitude = Math.max(...longitudes);
+  const latitudeRange = maxLatitude - minLatitude;
+  const longitudeRange = maxLongitude - minLongitude;
+  const drawableWidth = width - padding * 2;
+  const drawableHeight = height - padding * 2;
+  const longitudeScale =
+    longitudeRange > 0 ? drawableWidth / longitudeRange : Infinity;
+  const latitudeScale =
+    latitudeRange > 0 ? drawableHeight / latitudeRange : Infinity;
+  const scale = Math.min(longitudeScale, latitudeScale);
+  const safeScale = Number.isFinite(scale) ? scale : 1;
+  const sketchWidth = longitudeRange * safeScale;
+  const sketchHeight = latitudeRange * safeScale;
+  const offsetX = padding + (drawableWidth - sketchWidth) / 2;
+  const offsetY = padding + (drawableHeight - sketchHeight) / 2;
+
+  return validPoints.map((point) => ({
+    label: `P${point.index + 1}`,
+    x:
+      longitudeRange > 0
+        ? offsetX + (point.longitude - minLongitude) * safeScale
+        : width / 2,
+    y:
+      latitudeRange > 0
+        ? offsetY + (maxLatitude - point.latitude) * safeScale
+        : height / 2,
+  }));
+}
+
+function buildTerrainSketchHtml(points) {
+  const width = 500;
+  const height = 350;
+  const sketchPoints = normalizeSketchPoints(points, width, height);
+
+  if (!sketchPoints.length) {
+    return "";
+  }
+
+  const coordinatePairs = sketchPoints
+    .map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`)
+    .join(" ");
+  const isClosedPolygon = sketchPoints.length >= 3;
+  const shape = isClosedPolygon
+    ? `<polygon points="${coordinatePairs}" fill="#dff3e7" stroke="#2f855a" stroke-width="3" stroke-linejoin="round" />`
+    : `<polyline points="${coordinatePairs}" fill="none" stroke="#2f855a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />`;
+  const pointMarkers = sketchPoints
+    .map(
+      (point) => `
+        <g>
+          <circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="5.5" fill="#2f855a" />
+          <text x="${(point.x + 9).toFixed(2)}" y="${(point.y - 9).toFixed(2)}" fill="#123524" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="700">${escapeHtml(point.label)}</text>
+        </g>
+      `,
+    )
+    .join("");
+  const statusText = isClosedPolygon
+    ? ""
+    : '<p class="sketch-status">Polygone non fermé</p>';
+
+  return `
+    <section class="section">
+      <h2>4. Croquis du terrain</h2>
+      <div class="content">
+        <div class="sketch-frame">
+          <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Croquis indicatif du terrain">
+            <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="12" fill="#fbfdfb" stroke="#d8e2dc" stroke-width="2" />
+            ${shape}
+            ${pointMarkers}
+          </svg>
+        </div>
+        ${statusText}
+        <p class="sketch-legend">Croquis indicatif généré à partir des points GPS enregistrés.</p>
+      </div>
+    </section>
+  `;
+}
+
 function ResultRow({ label, value }) {
   return (
     <View style={styles.resultRow}>
@@ -144,6 +247,7 @@ function buildPdfHtml({
         .join("")
     : '<tr><td colspan="5">Aucun point GPS disponible.</td></tr>';
 
+  const terrainSketchSection = buildTerrainSketchHtml(points);
   const segmentRows = segmentDistances.length
     ? segmentDistances
         .map(
@@ -241,6 +345,27 @@ function buildPdfHtml({
             font-weight: 700;
             margin: 0 0 8px;
           }
+          .sketch-frame {
+            text-align: center;
+            width: 100%;
+          }
+          .sketch-frame svg {
+            max-width: 100%;
+          }
+          .sketch-legend {
+            color: #657786;
+            font-size: 11px;
+            font-style: italic;
+            margin: 8px 0 0;
+            text-align: center;
+          }
+          .sketch-status {
+            color: #8a4b00;
+            font-size: 12px;
+            font-weight: 800;
+            margin: 8px 0 0;
+            text-align: center;
+          }
           .warning {
             background: #fff8e1;
             border: 1px solid #f2c94c;
@@ -312,9 +437,10 @@ function buildPdfHtml({
           </div>
         </section>
 
+        ${terrainSketchSection}
 
         <section class="section">
-          <h2>4. Distances des côtés du terrain</h2>
+          <h2>5. Distances des côtés du terrain</h2>
           <div class="content">
             <table>
               <thead>
@@ -326,7 +452,7 @@ function buildPdfHtml({
         </section>
 
         <section class="section">
-          <h2>5. Rapport qualité GPS</h2>
+          <h2>6. Rapport qualité GPS</h2>
           <div class="content grid">
             <div><div class="item-label">Précision moyenne GPS</div><div class="item-value">${escapeHtml(formatMeters(result.averageAccuracy))}</div></div>
             <div><div class="item-label">Meilleure précision GPS</div><div class="item-value">${escapeHtml(formatMeters(result.minAccuracy))}</div></div>
@@ -335,7 +461,7 @@ function buildPdfHtml({
         </section>
 
         <section class="section">
-          <h2>6. Rapport qualité terrain</h2>
+          <h2>7. Rapport qualité terrain</h2>
           <div class="content">
             <div class="quality-badge" style="background: ${escapeHtml(getQualityColor(qualityReport.qualityLevel))};">Qualité générale : ${escapeHtml(qualityReport.qualityLabel)}</div>
             <p class="quality-message">${escapeHtml(qualityReport.qualityMessage)}</p>
@@ -355,7 +481,7 @@ function buildPdfHtml({
         }
 
         <section class="section">
-          <h2>7. Points GPS</h2>
+          <h2>8. Points GPS</h2>
           <div class="content">
             <table>
               <thead>
@@ -367,7 +493,7 @@ function buildPdfHtml({
         </section>
 
         <section class="section">
-          <h2>8. Avertissement</h2>
+          <h2>9. Avertissement</h2>
           <div class="content legal">${escapeHtml(PRECISION_WARNING)}</div>
         </section>
       </body>
