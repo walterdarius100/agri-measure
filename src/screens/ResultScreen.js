@@ -139,10 +139,34 @@ function normalizeSketchPoints(
   }));
 }
 
-function buildTerrainSketchHtml(points) {
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function getSketchCenter(sketchPoints, width, height) {
+  if (!sketchPoints.length) {
+    return { x: width / 2, y: height / 2 };
+  }
+
+  const totals = sketchPoints.reduce(
+    (accumulator, point) => ({
+      x: accumulator.x + point.x,
+      y: accumulator.y + point.y,
+    }),
+    { x: 0, y: 0 },
+  );
+
+  return {
+    x: totals.x / sketchPoints.length,
+    y: totals.y / sketchPoints.length,
+  };
+}
+
+function buildTerrainSketchHtml(points, segmentDistances, result) {
   const width = 500;
   const height = 350;
-  const sketchPoints = normalizeSketchPoints(points, width, height);
+  const labelPadding = 12;
+  const sketchPoints = normalizeSketchPoints(points, width, height, 54);
 
   if (!sketchPoints.length) {
     return "";
@@ -153,18 +177,70 @@ function buildTerrainSketchHtml(points) {
     .join(" ");
   const isClosedPolygon = sketchPoints.length >= 3;
   const shape = isClosedPolygon
-    ? `<polygon points="${coordinatePairs}" fill="#dff3e7" stroke="#2f855a" stroke-width="3" stroke-linejoin="round" />`
+    ? `<polygon points="${coordinatePairs}" fill="#dff3e7" fill-opacity="0.78" stroke="#2f855a" stroke-width="3" stroke-linejoin="round" />`
     : `<polyline points="${coordinatePairs}" fill="none" stroke="#2f855a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />`;
-  const pointMarkers = sketchPoints
-    .map(
-      (point) => `
-        <g>
-          <circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="5.5" fill="#2f855a" />
-          <text x="${(point.x + 9).toFixed(2)}" y="${(point.y - 9).toFixed(2)}" fill="#123524" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="700">${escapeHtml(point.label)}</text>
-        </g>
-      `,
+  const pointByLabel = new Map(
+    sketchPoints.map((point) => [Number(point.label.replace("P", "")), point]),
+  );
+  const safeSegmentDistances = Array.isArray(segmentDistances)
+    ? segmentDistances
+    : [];
+  const distanceLabels = safeSegmentDistances
+    .filter(
+      (segment) =>
+        Number.isFinite(segment?.distanceM) &&
+        pointByLabel.has(segment.from) &&
+        pointByLabel.has(segment.to),
     )
+    .map((segment) => {
+      const fromPoint = pointByLabel.get(segment.from);
+      const toPoint = pointByLabel.get(segment.to);
+      const deltaX = toPoint.x - fromPoint.x;
+      const deltaY = toPoint.y - fromPoint.y;
+      const length = Math.hypot(deltaX, deltaY) || 1;
+      const offsetX = (-deltaY / length) * 16;
+      const offsetY = (deltaX / length) * 16;
+      const x = clamp((fromPoint.x + toPoint.x) / 2 + offsetX, 58, width - 58);
+      const y = clamp((fromPoint.y + toPoint.y) / 2 + offsetY, 24, height - 24);
+      const text = `P${segment.from} → P${segment.to} : ${formatMeters(
+        segment.distanceM,
+      )}`;
+      const rectWidth = Math.max(84, text.length * 5.7 + labelPadding);
+
+      return `
+        <g>
+          <rect x="${(x - rectWidth / 2).toFixed(2)}" y="${(y - 11).toFixed(2)}" width="${rectWidth.toFixed(2)}" height="18" rx="8" fill="#ffffff" fill-opacity="0.92" stroke="#cfe3d6" stroke-width="1" />
+          <text x="${x.toFixed(2)}" y="${y.toFixed(2)}" fill="#123524" font-size="10.5" font-family="Arial, Helvetica, sans-serif" font-weight="700" text-anchor="middle">${escapeHtml(text)}</text>
+        </g>
+      `;
+    })
     .join("");
+  const pointMarkers = sketchPoints
+    .map((point) => {
+      const labelX = clamp(point.x + 16, 24, width - 24);
+      const labelY = clamp(point.y - 14, 18, height - 10);
+      const labelWidth = Math.max(26, point.label.length * 8 + 12);
+
+      return `
+        <g>
+          <circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="6.5" fill="#ffffff" stroke="#2f855a" stroke-width="3" />
+          <rect x="${(labelX - 5).toFixed(2)}" y="${(labelY - 13).toFixed(2)}" width="${labelWidth.toFixed(2)}" height="18" rx="7" fill="#ffffff" fill-opacity="0.94" stroke="#2f855a" stroke-width="1" />
+          <text x="${labelX.toFixed(2)}" y="${labelY.toFixed(2)}" fill="#123524" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="800">${escapeHtml(point.label)}</text>
+        </g>
+      `;
+    })
+    .join("");
+  const center = getSketchCenter(sketchPoints, width, height);
+  const showArea = Number.isFinite(result?.areaM2);
+  const areaLabel = showArea
+    ? `
+        <g>
+          <rect x="${(center.x - 83).toFixed(2)}" y="${(center.y - 24).toFixed(2)}" width="166" height="${Number.isFinite(result?.areaHa) ? 46 : 28}" rx="10" fill="#ffffff" fill-opacity="0.88" stroke="#cfe3d6" stroke-width="1" />
+          <text x="${center.x.toFixed(2)}" y="${(center.y - 6).toFixed(2)}" fill="#123524" font-size="13" font-family="Arial, Helvetica, sans-serif" font-weight="800" text-anchor="middle">${escapeHtml(`Superficie : ${formatNumber(result.areaM2)} m²`)}</text>
+          ${Number.isFinite(result?.areaHa) ? `<text x="${center.x.toFixed(2)}" y="${(center.y + 13).toFixed(2)}" fill="#2f855a" font-size="12" font-family="Arial, Helvetica, sans-serif" font-weight="700" text-anchor="middle">${escapeHtml(`${formatNumber(result.areaHa, 4)} ha`)}</text>` : ""}
+        </g>
+      `
+    : "";
   const statusText = isClosedPolygon
     ? ""
     : '<p class="sketch-status">Polygone non fermé</p>';
@@ -174,14 +250,16 @@ function buildTerrainSketchHtml(points) {
       <h2>4. Croquis du terrain</h2>
       <div class="content">
         <div class="sketch-frame">
-          <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Croquis indicatif du terrain">
+          <svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Croquis indicatif du terrain avec points GPS, distances et superficie">
             <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="12" fill="#fbfdfb" stroke="#d8e2dc" stroke-width="2" />
             ${shape}
+            ${distanceLabels}
+            ${areaLabel}
             ${pointMarkers}
           </svg>
         </div>
         ${statusText}
-        <p class="sketch-legend">Croquis indicatif généré à partir des points GPS enregistrés.</p>
+        <p class="sketch-legend">Croquis indicatif généré à partir des points GPS enregistrés. Les distances affichées correspondent aux segments entre points.</p>
       </div>
     </section>
   `;
@@ -247,7 +325,11 @@ function buildPdfHtml({
         .join("")
     : '<tr><td colspan="5">Aucun point GPS disponible.</td></tr>';
 
-  const terrainSketchSection = buildTerrainSketchHtml(points);
+  const terrainSketchSection = buildTerrainSketchHtml(
+    points,
+    segmentDistances,
+    result,
+  );
   const segmentRows = segmentDistances.length
     ? segmentDistances
         .map(
