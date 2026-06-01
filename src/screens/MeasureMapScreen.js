@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import * as Location from "expo-location";
 import MapView, { Marker, Polygon, Polyline } from "react-native-maps";
 
@@ -21,6 +28,11 @@ import screenStyles from "./screenStyles";
 const POSITION_UNAVAILABLE_MESSAGE =
   "Position GPS indisponible. Vérifiez que le GPS est activé et réessayez en extérieur.";
 const MAX_SAVED_POINTS = 100;
+const MAP_TYPE_OPTIONS = [
+  { label: "Standard", value: "standard" },
+  { label: "Satellite", value: "satellite" },
+  { label: "Hybride", value: "hybrid" },
+];
 
 function formatCoordinate(value) {
   return typeof value === "number" ? value.toFixed(7) : "Indisponible";
@@ -126,6 +138,7 @@ export default function MeasureMapScreen({ navigation, route }) {
   const [isLoadingPosition, setIsLoadingPosition] = useState(true);
   const [locationError, setLocationError] = useState(null);
   const [savedPoints, setSavedPoints] = useState([]);
+  const [mapType, setMapType] = useState("standard");
 
   const requestCurrentPosition = useCallback(async () => {
     setIsLoadingPosition(true);
@@ -435,11 +448,45 @@ export default function MeasureMapScreen({ navigation, route }) {
           </Text>
         </View>
 
+        <View style={styles.mapTypeSelector}>
+          {MAP_TYPE_OPTIONS.map((option) => {
+            const isSelected = mapType === option.value;
+
+            return (
+              <Pressable
+                key={option.value}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isSelected }}
+                onPress={() => setMapType(option.value)}
+                style={[
+                  styles.mapTypeButton,
+                  isSelected ? styles.mapTypeButtonSelected : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.mapTypeButtonText,
+                    isSelected ? styles.mapTypeButtonTextSelected : null,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={styles.mapTypeNote}>
+          Le mode satellite dépend de la disponibilité des données
+          cartographiques et de la connexion Internet.
+        </Text>
+
         <View style={styles.mapContainer}>
           <MapView
             key={`${savedPoints.length}-${mapRegion.latitude}-${mapRegion.longitude}`}
             style={styles.map}
             initialRegion={mapRegion}
+            mapType={mapType}
           >
             {currentMapCoordinate ? (
               <Marker
@@ -646,6 +693,40 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 14,
     padding: 18,
+  },
+  mapTypeSelector: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 16,
+    flexDirection: "row",
+    gap: 8,
+    padding: 6,
+  },
+  mapTypeButton: {
+    alignItems: "center",
+    borderRadius: 12,
+    flex: 1,
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+  },
+  mapTypeButtonSelected: {
+    backgroundColor: colors.primary,
+  },
+  mapTypeButtonText: {
+    color: colors.primaryDark,
+    fontSize: 14,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  mapTypeButtonTextSelected: {
+    color: colors.surface,
+  },
+  mapTypeNote: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 19,
   },
   mapContainer: {
     borderRadius: 18,
