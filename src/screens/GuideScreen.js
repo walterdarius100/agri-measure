@@ -11,7 +11,8 @@ const aboutItems = [
   ['Canal', 'preview'],
   ['Type', 'version interne de test'],
   ['Organisation', 'Agri-tech'],
-  ['Mention', 'usage terrain indicatif'],
+  ['Usage', 'mesure agricole indicative'],
+  ['Mention', 'cette version est destinée aux tests terrain internes'],
 ];
 
 const guideSections = [
