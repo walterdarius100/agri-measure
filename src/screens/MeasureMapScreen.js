@@ -621,7 +621,7 @@ export default function MeasureMapScreen({ navigation, route }) {
         />
         <PrimaryButton
           label="Annuler"
-          onPress={() => navigation.navigate("Home")}
+          onPress={() => navigation.navigate("MainTabs", { screen: "Home" })}
           variant="secondary"
         />
       </View>
