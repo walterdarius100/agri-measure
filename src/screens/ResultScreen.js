@@ -880,17 +880,17 @@ export default function ResultScreen({ navigation, route }) {
         ) : null}
         <PrimaryButton
           label="Voir l’historique"
-          onPress={() => navigation.navigate("History")}
+          onPress={() => navigation.navigate("MainTabs", { screen: "History" })}
           variant="secondary"
         />
         <PrimaryButton
           label="Nouvelle mesure"
-          onPress={() => navigation.navigate("NewMeasurement")}
+          onPress={() => navigation.navigate("MainTabs", { screen: "NewMeasurement" })}
           variant="secondary"
         />
         <PrimaryButton
           label="Retour à l’accueil"
-          onPress={() => navigation.navigate("Home")}
+          onPress={() => navigation.navigate("MainTabs", { screen: "Home" })}
           variant="secondary"
         />
       </View>
