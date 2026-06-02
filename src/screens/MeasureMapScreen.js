@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Pressable,
@@ -28,6 +28,9 @@ import screenStyles from "./screenStyles";
 const POSITION_UNAVAILABLE_MESSAGE =
   "Position GPS indisponible. Vérifiez que le GPS est activé et réessayez en extérieur.";
 const MAX_SAVED_POINTS = 100;
+const GPS_STABILIZATION_SAMPLE_COUNT = 5;
+const GPS_STABILIZATION_DELAY_MS = 1250;
+const GPS_STABILIZATION_BEST_SAMPLE_COUNT = 3;
 const MAP_TYPE_OPTIONS = [
   { label: "Standard", value: "standard" },
   { label: "Satellite", value: "satellite" },
@@ -56,7 +59,7 @@ function getAccuracyStatus(accuracy) {
   return accuracy <= 10 ? "good" : "warning";
 }
 
-function buildGpsPoint(position) {
+function buildGpsPoint(position, extraFields = {}) {
   if (!position?.coords) {
     return null;
   }
@@ -66,6 +69,54 @@ function buildGpsPoint(position) {
     longitude: position.coords.longitude,
     accuracy: position.coords.accuracy,
     timestamp: position.timestamp,
+    ...extraFields,
+  };
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isUsableGpsSample(point) {
+  return (
+    Number.isFinite(point?.latitude) &&
+    Number.isFinite(point?.longitude) &&
+    Number.isFinite(point?.accuracy)
+  );
+}
+
+function buildStabilizedGpsPoint(samples) {
+  const usableSamples = samples.filter(isUsableGpsSample);
+
+  if (usableSamples.length === 0) {
+    return null;
+  }
+
+  const bestSamples = [...usableSamples]
+    .sort(
+      (firstSample, secondSample) =>
+        firstSample.accuracy - secondSample.accuracy,
+    )
+    .slice(0, GPS_STABILIZATION_BEST_SAMPLE_COUNT);
+  const samplesCount = bestSamples.length;
+  const sum = bestSamples.reduce(
+    (accumulator, sample) => ({
+      latitude: accumulator.latitude + sample.latitude,
+      longitude: accumulator.longitude + sample.longitude,
+      accuracy: accumulator.accuracy + sample.accuracy,
+    }),
+    { latitude: 0, longitude: 0, accuracy: 0 },
+  );
+
+  return {
+    latitude: sum.latitude / samplesCount,
+    longitude: sum.longitude / samplesCount,
+    accuracy: sum.accuracy / samplesCount,
+    timestamp: Date.now(),
+    samplesCount,
+    stabilized: true,
   };
 }
 
@@ -123,6 +174,72 @@ function SegmentDistanceRow({ segment }) {
   );
 }
 
+function getPointAccuracyMessage(accuracy) {
+  if (typeof accuracy !== "number") {
+    return "Point ajouté. Précision GPS indisponible.";
+  }
+
+  if (accuracy <= 5) {
+    return "Point ajouté avec bonne précision.";
+  }
+
+  if (accuracy <= 10) {
+    return "Point ajouté avec précision moyenne.";
+  }
+
+  return "Point ajouté.";
+}
+
+function shouldConfirmLowAccuracy(accuracy) {
+  return typeof accuracy === "number" && accuracy > 10;
+}
+
+function getLowAccuracyConfirmationMessage(accuracy) {
+  if (typeof accuracy === "number" && accuracy > 15) {
+    return (
+      "Précision GPS très faible. Il est recommandé d’attendre ou de se déplacer dans une zone plus dégagée. " +
+      `Précision moyenne : ${formatAccuracy(accuracy)}. Voulez-vous quand même ajouter ce point ?`
+    );
+  }
+
+  return (
+    "La précision GPS est faible. Voulez-vous quand même ajouter ce point ? " +
+    `Précision moyenne : ${formatAccuracy(accuracy)}.`
+  );
+}
+
+function getLowAccuracyConfirmationTitle(accuracy) {
+  return typeof accuracy === "number" && accuracy > 15
+    ? "Précision GPS très faible"
+    : "Précision GPS faible";
+}
+
+function confirmLowAccuracyPoint(accuracy) {
+  return new Promise((resolve) => {
+    Alert.alert(
+      getLowAccuracyConfirmationTitle(accuracy),
+      getLowAccuracyConfirmationMessage(accuracy),
+      [
+        { text: "Annuler", style: "cancel", onPress: () => resolve(false) },
+        { text: "Ajouter", onPress: () => resolve(true) },
+      ],
+    );
+  });
+}
+
+function confirmQuickAddWarning() {
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Ajout rapide",
+      "Ajout rapide : précision potentiellement moins fiable.",
+      [
+        { text: "Annuler", style: "cancel", onPress: () => resolve(false) },
+        { text: "Continuer", onPress: () => resolve(true) },
+      ],
+    );
+  });
+}
+
 function areSamePoint(firstPoint, secondPoint) {
   return (
     firstPoint?.latitude === secondPoint?.latitude &&
@@ -139,6 +256,9 @@ export default function MeasureMapScreen({ navigation, route }) {
   const [locationError, setLocationError] = useState(null);
   const [savedPoints, setSavedPoints] = useState([]);
   const [mapType, setMapType] = useState("standard");
+  const [isStabilizingGps, setIsStabilizingGps] = useState(false);
+  const [stabilizationSamplesCount, setStabilizationSamplesCount] = useState(0);
+  const mapRef = useRef(null);
 
   const requestCurrentPosition = useCallback(async () => {
     setIsLoadingPosition(true);
@@ -172,54 +292,127 @@ export default function MeasureMapScreen({ navigation, route }) {
     requestCurrentPosition();
   }, [requestCurrentPosition]);
 
-  const addPoint = useCallback(() => {
+  const savePoint = useCallback(
+    async (nextPoint, { quick = false } = {}) => {
+      if (!nextPoint) {
+        Alert.alert(
+          "Position indisponible",
+          "Aucune position GPS disponible. Actualisez la position avant d’ajouter un point.",
+        );
+        return false;
+      }
+
+      if (savedPoints.length >= MAX_SAVED_POINTS) {
+        Alert.alert(
+          "Limite atteinte",
+          "Vous ne pouvez pas enregistrer plus de 100 points GPS pour une mesure.",
+        );
+        return false;
+      }
+
+      const lastPoint = savedPoints[savedPoints.length - 1];
+
+      if (areSamePoint(lastPoint, nextPoint)) {
+        Alert.alert(
+          "Point déjà enregistré",
+          "Ce point GPS est exactement identique au dernier point enregistré.",
+        );
+        return false;
+      }
+
+      if (quick) {
+        const shouldContinue = await confirmQuickAddWarning();
+
+        if (!shouldContinue) {
+          return false;
+        }
+      }
+
+      if (shouldConfirmLowAccuracy(nextPoint.accuracy)) {
+        const shouldSave = await confirmLowAccuracyPoint(nextPoint.accuracy);
+
+        if (!shouldSave) {
+          return false;
+        }
+      }
+
+      setSavedPoints((previousPoints) => [...previousPoints, nextPoint]);
+      Alert.alert("Point ajouté", getPointAccuracyMessage(nextPoint.accuracy));
+      return true;
+    },
+    [savedPoints],
+  );
+
+  const addPoint = useCallback(async () => {
+    if (isStabilizingGps) {
+      return;
+    }
+
+    setIsStabilizingGps(true);
+    setStabilizationSamplesCount(0);
+
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+
+      if (permission.status !== "granted") {
+        setCurrentPosition(null);
+        setLocationError(
+          "Permission GPS refusée. Autorisez la localisation pour stabiliser votre point.",
+        );
+        Alert.alert(
+          "Permission GPS refusée",
+          "Autorisez la localisation pour stabiliser et ajouter un point GPS.",
+        );
+        return;
+      }
+
+      const samples = [];
+
+      for (let index = 0; index < GPS_STABILIZATION_SAMPLE_COUNT; index += 1) {
+        const position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Highest,
+        });
+        const point = buildGpsPoint(position);
+
+        setCurrentPosition(position);
+
+        if (isUsableGpsSample(point)) {
+          samples.push(point);
+          setStabilizationSamplesCount(samples.length);
+        }
+
+        if (index < GPS_STABILIZATION_SAMPLE_COUNT - 1) {
+          await wait(GPS_STABILIZATION_DELAY_MS);
+        }
+      }
+
+      const stabilizedPoint = buildStabilizedGpsPoint(samples);
+
+      if (!stabilizedPoint) {
+        Alert.alert(
+          "Stabilisation impossible",
+          "Aucune lecture GPS exploitable n’a été obtenue. Restez en zone dégagée puis réessayez.",
+        );
+        return;
+      }
+
+      await savePoint(stabilizedPoint);
+    } catch {
+      Alert.alert(
+        "Stabilisation GPS interrompue",
+        POSITION_UNAVAILABLE_MESSAGE,
+      );
+    } finally {
+      setIsStabilizingGps(false);
+      setStabilizationSamplesCount(0);
+    }
+  }, [isStabilizingGps, savePoint]);
+
+  const addPointQuickly = useCallback(async () => {
     const nextPoint = buildGpsPoint(currentPosition);
 
-    if (!nextPoint) {
-      Alert.alert(
-        "Position indisponible",
-        "Aucune position GPS disponible. Actualisez la position avant d’ajouter un point.",
-      );
-      return;
-    }
-
-    if (savedPoints.length >= MAX_SAVED_POINTS) {
-      Alert.alert(
-        "Limite atteinte",
-        "Vous ne pouvez pas enregistrer plus de 100 points GPS pour une mesure.",
-      );
-      return;
-    }
-
-    const lastPoint = savedPoints[savedPoints.length - 1];
-
-    if (areSamePoint(lastPoint, nextPoint)) {
-      Alert.alert(
-        "Point déjà enregistré",
-        "Ce point GPS est exactement identique au dernier point enregistré.",
-      );
-      return;
-    }
-
-    const savePoint = () => {
-      setSavedPoints((previousPoints) => [...previousPoints, nextPoint]);
-      Alert.alert("Point ajouté", "Le point GPS a été ajouté avec succès.");
-    };
-
-    if (typeof nextPoint.accuracy === "number" && nextPoint.accuracy > 15) {
-      Alert.alert(
-        "Précision GPS faible",
-        `La précision actuelle est de ${formatAccuracy(nextPoint.accuracy)}. Voulez-vous quand même ajouter ce point ?`,
-        [
-          { text: "Annuler", style: "cancel" },
-          { text: "Ajouter", onPress: savePoint },
-        ],
-      );
-      return;
-    }
-
-    savePoint();
-  }, [currentPosition, savedPoints]);
+    await savePoint(nextPoint, { quick: true });
+  }, [currentPosition, savePoint]);
 
   const deleteLastPoint = useCallback(() => {
     if (savedPoints.length === 0) {
@@ -309,6 +502,17 @@ export default function MeasureMapScreen({ navigation, route }) {
     () => buildMapRegion(savedPoints, currentMapPoint),
     [currentMapPoint, savedPoints],
   );
+
+  useEffect(() => {
+    if (mapPoints.length === 0) {
+      return;
+    }
+
+    mapRef.current?.fitToCoordinates(mapPoints, {
+      animated: true,
+      edgePadding: { bottom: 50, left: 50, right: 50, top: 50 },
+    });
+  }, [mapPoints]);
   const segmentDistances = useMemo(
     () => calculateSegmentDistances(savedPoints),
     [savedPoints],
@@ -386,8 +590,8 @@ export default function MeasureMapScreen({ navigation, route }) {
         </View>
 
         <Text style={styles.helpText}>
-          Attendez quelques secondes que le signal GPS se stabilise avant de
-          commencer la mesure.
+          Pour une meilleure précision, placez-vous au coin du terrain, restez
+          immobile quelques secondes, puis ajoutez le point.
         </Text>
 
         {locationError ? (
@@ -430,7 +634,7 @@ export default function MeasureMapScreen({ navigation, route }) {
         ) : null}
 
         <PrimaryButton
-          disabled={isLoadingPosition}
+          disabled={isLoadingPosition || isStabilizingGps}
           label={
             isLoadingPosition
               ? "Actualisation en cours…"
@@ -483,7 +687,7 @@ export default function MeasureMapScreen({ navigation, route }) {
 
         <View style={styles.mapContainer}>
           <MapView
-            key={`${savedPoints.length}-${mapRegion.latitude}-${mapRegion.longitude}`}
+            ref={mapRef}
             style={styles.map}
             initialRegion={mapRegion}
             mapType={mapType}
@@ -550,13 +754,35 @@ export default function MeasureMapScreen({ navigation, route }) {
         </View>
 
         <View style={styles.pointsActions}>
-          <PrimaryButton label="Ajouter ce point" onPress={addPoint} />
           <PrimaryButton
+            disabled={isStabilizingGps}
+            label={
+              isStabilizingGps
+                ? "Stabilisation GPS en cours…"
+                : "Ajouter ce point"
+            }
+            onPress={addPoint}
+          />
+          {isStabilizingGps ? (
+            <Text style={styles.stabilizationText}>
+              Stabilisation GPS… restez immobile. Lectures collectées : {" "}
+              {stabilizationSamplesCount} / {GPS_STABILIZATION_SAMPLE_COUNT}
+            </Text>
+          ) : null}
+          <PrimaryButton
+            disabled={isStabilizingGps || isLoadingPosition}
+            label="Ajouter rapidement"
+            onPress={addPointQuickly}
+            variant="secondary"
+          />
+          <PrimaryButton
+            disabled={isStabilizingGps}
             label="Supprimer le dernier point"
             onPress={deleteLastPoint}
             variant="secondary"
           />
           <PrimaryButton
+            disabled={isStabilizingGps}
             label="Réinitialiser les points"
             onPress={resetPoints}
             variant="secondary"
@@ -586,6 +812,14 @@ export default function MeasureMapScreen({ navigation, route }) {
                 <Text style={styles.pointValue}>
                   Accuracy : {formatAccuracy(point.accuracy)}
                 </Text>
+                <Text style={styles.pointValue}>
+                  Statut : {point.stabilized ? "stabilisé" : "non stabilisé"}
+                </Text>
+                {typeof point.samplesCount === "number" ? (
+                  <Text style={styles.pointValue}>
+                    Lectures retenues : {point.samplesCount}
+                  </Text>
+                ) : null}
                 <Text style={styles.pointValue}>
                   Timestamp : {formatTimestamp(point.timestamp)}
                 </Text>
@@ -807,6 +1041,16 @@ const styles = StyleSheet.create({
   },
   pointsActions: {
     gap: 10,
+  },
+  stabilizationText: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 12,
+    color: colors.primaryDark,
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 20,
+    padding: 12,
+    textAlign: "center",
   },
   emptyPointsText: {
     color: colors.muted,
