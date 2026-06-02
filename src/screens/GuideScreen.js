@@ -5,6 +5,15 @@ import PrimaryButton from '../components/PrimaryButton';
 import colors from '../constants/colors';
 import screenStyles from './screenStyles';
 
+const aboutItems = [
+  ['Application', 'AgriMeasure'],
+  ['Version', '1.0.0'],
+  ['Canal', 'preview'],
+  ['Type', 'version interne de test'],
+  ['Organisation', 'Agri-tech'],
+  ['Mention', 'usage terrain indicatif'],
+];
+
 const guideSections = [
   {
     title: '1. Avant de commencer',
@@ -76,6 +85,21 @@ function BulletList({ items }) {
   );
 }
 
+function AboutSection() {
+  return (
+    <InfoCard title="À propos">
+      <View style={styles.aboutList}>
+        {aboutItems.map(([label, value]) => (
+          <View key={label} style={styles.aboutRow}>
+            <Text style={styles.aboutLabel}>{label}</Text>
+            <Text style={styles.aboutValue}>{value}</Text>
+          </View>
+        ))}
+      </View>
+    </InfoCard>
+  );
+}
+
 export default function GuideScreen({ navigation }) {
   return (
     <ScrollView contentContainerStyle={screenStyles.content} style={screenStyles.container}>
@@ -101,6 +125,8 @@ export default function GuideScreen({ navigation }) {
       <InfoCard title={guideSections[4].title}>
         <BulletList items={guideSections[4].items} />
       </InfoCard>
+
+      <AboutSection />
 
       <View style={screenStyles.buttonGroup}>
         <PrimaryButton label="Commencer une nouvelle mesure" onPress={() => navigation.navigate('NewMeasurement')} />
@@ -135,5 +161,23 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 15,
     lineHeight: 23,
+  },
+  aboutList: {
+    gap: 12,
+  },
+  aboutRow: {
+    gap: 4,
+  },
+  aboutLabel: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  aboutValue: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 22,
   },
 });
