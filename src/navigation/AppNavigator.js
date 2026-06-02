@@ -29,8 +29,9 @@ const screenOptions = {
   },
 };
 
-const TAB_BAR_BASE_HEIGHT = 70;
-const TAB_BAR_MIN_BOTTOM_PADDING = 12;
+const TAB_BAR_BASE_HEIGHT = 74;
+const TAB_BAR_MIN_BOTTOM_PADDING = 20;
+const TAB_BAR_TOP_PADDING = 8;
 
 const tabIcons = {
   Home: ['home', 'home-outline'],
@@ -42,7 +43,7 @@ const tabIcons = {
 function MainTabs() {
   const insets = useSafeAreaInsets();
 
-  const bottomPadding = Math.max(insets.bottom, TAB_BAR_MIN_BOTTOM_PADDING);
+  const bottomPadding = Math.max(insets.bottom + 8, TAB_BAR_MIN_BOTTOM_PADDING);
   const tabBarHeight = TAB_BAR_BASE_HEIGHT + bottomPadding;
 
   const commonTabOptions = useMemo(
@@ -55,19 +56,20 @@ function MainTabs() {
       tabBarHideOnKeyboard: true,
       tabBarItemStyle: {
         minHeight: TAB_BAR_BASE_HEIGHT,
-        paddingVertical: 6,
+        paddingTop: 2,
+        paddingBottom: 4,
       },
       tabBarIconStyle: {
-        marginTop: 2,
-        marginBottom: 0,
+        marginTop: -2,
+        marginBottom: 1,
       },
       tabBarLabelPosition: 'below-icon',
       tabBarLabelStyle: {
         fontSize: 12,
         fontWeight: '700',
         lineHeight: 15,
-        marginTop: 2,
-        marginBottom: 0,
+        marginTop: 1,
+        marginBottom: 2,
       },
       tabBarStyle: {
         backgroundColor: colors.surface,
@@ -76,7 +78,7 @@ function MainTabs() {
         elevation: 8,
         height: tabBarHeight,
         paddingBottom: bottomPadding,
-        paddingTop: 10,
+        paddingTop: TAB_BAR_TOP_PADDING,
         shadowColor: '#000000',
         shadowOffset: { width: 0, height: -2 },
         shadowOpacity: 0.08,
