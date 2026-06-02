@@ -1,7 +1,9 @@
+import { useMemo } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import colors from '../constants/colors';
 import GuideScreen from '../screens/GuideScreen';
@@ -27,6 +29,9 @@ const screenOptions = {
   },
 };
 
+const TAB_BAR_BASE_HEIGHT = 70;
+const TAB_BAR_MIN_BOTTOM_PADDING = 12;
+
 const tabIcons = {
   Home: ['home', 'home-outline'],
   NewMeasurement: ['add-circle', 'add-circle-outline'],
@@ -35,27 +40,60 @@ const tabIcons = {
 };
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+
+  const bottomPadding = Math.max(insets.bottom, TAB_BAR_MIN_BOTTOM_PADDING);
+  const tabBarHeight = TAB_BAR_BASE_HEIGHT + bottomPadding;
+
+  const commonTabOptions = useMemo(
+    () => ({
+      ...screenOptions,
+      lazy: true,
+      tabBarActiveTintColor: colors.primary,
+      tabBarInactiveTintColor: colors.muted,
+      tabBarAllowFontScaling: false,
+      tabBarHideOnKeyboard: true,
+      tabBarItemStyle: {
+        minHeight: TAB_BAR_BASE_HEIGHT,
+        paddingVertical: 6,
+      },
+      tabBarIconStyle: {
+        marginTop: 2,
+        marginBottom: 0,
+      },
+      tabBarLabelPosition: 'below-icon',
+      tabBarLabelStyle: {
+        fontSize: 12,
+        fontWeight: '700',
+        lineHeight: 15,
+        marginTop: 2,
+        marginBottom: 0,
+      },
+      tabBarStyle: {
+        backgroundColor: colors.surface,
+        borderTopColor: colors.border,
+        borderTopWidth: 1,
+        elevation: 8,
+        height: tabBarHeight,
+        paddingBottom: bottomPadding,
+        paddingTop: 10,
+        shadowColor: '#000000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.08,
+        shadowRadius: 8,
+      },
+    }),
+    [bottomPadding, tabBarHeight]
+  );
+
   return (
     <Tab.Navigator
       initialRouteName="Home"
       screenOptions={({ route }) => ({
-        ...screenOptions,
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.muted,
-        tabBarIcon: ({ color, focused, size }) => {
+        ...commonTabOptions,
+        tabBarIcon: ({ color, focused }) => {
           const [focusedIcon, defaultIcon] = tabIcons[route.name] ?? ['ellipse', 'ellipse-outline'];
-          return <Ionicons color={color} name={focused ? focusedIcon : defaultIcon} size={size} />;
-        },
-        tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '700',
-          paddingBottom: 4,
-        },
-        tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopColor: colors.border,
-          height: 72,
-          paddingTop: 8,
+          return <Ionicons color={color} name={focused ? focusedIcon : defaultIcon} size={26} />;
         },
       })}>
       <Tab.Screen name="Home" component={HomeScreen} options={{ title: 'Accueil', tabBarLabel: 'Accueil' }} />
