@@ -24,6 +24,8 @@
       "versionCode": 1,
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
       ]
     },
@@ -54,7 +56,13 @@
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/ac449497-54a4-44d0-a7e7-d9666af4650a"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "ac449497-54a4-44d0-a7e7-d9666af4650a"
+      }
     }
   }
 }
