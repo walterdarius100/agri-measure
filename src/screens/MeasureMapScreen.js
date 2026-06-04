@@ -8,14 +8,15 @@ import {
 } from "react";
 import {
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import Constants, { ExecutionEnvironment } from "expo-constants";
 import * as Location from "expo-location";
-import MapView, { Marker, Polygon, Polyline } from "react-native-maps";
 
 import AccuracyBadge from "../components/AccuracyBadge";
 import InfoCard from "../components/InfoCard";
@@ -35,7 +36,11 @@ import screenStyles from "./screenStyles";
 const POSITION_UNAVAILABLE_MESSAGE =
   "Position GPS indisponible. Vérifiez que le GPS est activé et réessayez en extérieur.";
 const MAP_FALLBACK_MESSAGE =
-  "Si la carte ne s’affiche pas, vous pouvez continuer la mesure avec les points GPS.";
+  "La carte est optionnelle : vous pouvez continuer la mesure avec les coordonnées GPS même si elle est indisponible.";
+const MAP_ANDROID_STANDALONE_MESSAGE =
+  "Carte désactivée dans cette APK Android : la configuration native Google Maps n’est pas disponible. La mesure GPS reste disponible.";
+const MAP_LOAD_ERROR_MESSAGE =
+  "La carte n’est pas disponible sur cet appareil. Continuez avec les points GPS.";
 const DEFAULT_MEASUREMENT_INFO = {
   clientName: "Non renseigné",
   locationName: "Non renseignée",
@@ -54,13 +59,60 @@ const MAP_TYPE_OPTIONS = [
   { label: "Hybride", value: "hybrid" },
 ];
 
+let mapComponents = null;
+
+function isExpoGo() {
+  return Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+}
+
+function getMapUnavailableReason() {
+  if (Platform.OS === "web") {
+    return "La carte native n’est pas disponible sur le web. Continuez avec les points GPS.";
+  }
+
+  if (Platform.OS !== "android") {
+    return null;
+  }
+
+  if (isExpoGo()) {
+    return null;
+  }
+
+  return MAP_ANDROID_STANDALONE_MESSAGE;
+}
+
+function canRenderNativeMap() {
+  return getMapUnavailableReason() === null;
+}
+
+function getMapComponents() {
+  if (!canRenderNativeMap()) {
+    return null;
+  }
+
+  if (!mapComponents) {
+    const maps = require("react-native-maps");
+
+    mapComponents = {
+      MapView: maps.default,
+      Marker: maps.Marker,
+      Polygon: maps.Polygon,
+      Polyline: maps.Polyline,
+    };
+  }
+
+  return mapComponents;
+}
+
 function normalizeMeasurementText(value, fallback) {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 function normalizeMeasurementInfo(measurementInfo) {
   const safeMeasurementInfo =
-    measurementInfo && typeof measurementInfo === "object" ? measurementInfo : {};
+    measurementInfo && typeof measurementInfo === "object"
+      ? measurementInfo
+      : {};
 
   return {
     ...DEFAULT_MEASUREMENT_INFO,
@@ -170,11 +222,20 @@ function buildGpsPoint(position, extraFields = {}) {
     return null;
   }
 
+  const latitude = Number(position.coords.latitude);
+  const longitude = Number(position.coords.longitude);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+
   return {
-    latitude: position.coords.latitude,
-    longitude: position.coords.longitude,
-    accuracy: position.coords.accuracy,
-    timestamp: position.timestamp,
+    latitude,
+    longitude,
+    accuracy: Number.isFinite(position.coords.accuracy)
+      ? position.coords.accuracy
+      : null,
+    timestamp: position.timestamp ?? Date.now(),
     ...extraFields,
   };
 }
@@ -366,7 +427,7 @@ export default function MeasureMapScreen({ navigation, route }) {
   const [savedPoints, setSavedPoints] = useState([]);
   const [mapType, setMapType] = useState("standard");
   const [shouldShowMap, setShouldShowMap] = useState(false);
-  const [mapError, setMapError] = useState(null);
+  const [mapError, setMapError] = useState(() => getMapUnavailableReason());
   const [isStabilizingGps, setIsStabilizingGps] = useState(false);
   const [stabilizationSamplesCount, setStabilizationSamplesCount] = useState(0);
   const mapRef = useRef(null);
@@ -577,24 +638,31 @@ export default function MeasureMapScreen({ navigation, route }) {
       return;
     }
 
-    const areaM2 = calculateAreaM2(savedPoints);
-    const areaHa = m2ToHectares(areaM2);
-    const perimeterM = calculatePerimeterM(savedPoints);
-    const averageAccuracy = calculateAverageAccuracy(savedPoints);
-    const minAccuracy = calculateMinAccuracy(savedPoints);
-    const maxAccuracy = calculateMaxAccuracy(savedPoints);
+    try {
+      const areaM2 = calculateAreaM2(savedPoints);
+      const areaHa = m2ToHectares(areaM2);
+      const perimeterM = calculatePerimeterM(savedPoints);
+      const averageAccuracy = calculateAverageAccuracy(savedPoints);
+      const minAccuracy = calculateMinAccuracy(savedPoints);
+      const maxAccuracy = calculateMaxAccuracy(savedPoints);
 
-    navigation.navigate("Result", {
-      measurementInfo,
-      points: savedPoints,
-      areaM2,
-      areaHa,
-      perimeterM,
-      averageAccuracy,
-      minAccuracy,
-      maxAccuracy,
-      createdAt: new Date().toISOString(),
-    });
+      navigation.navigate("Result", {
+        measurementInfo,
+        points: savedPoints,
+        areaM2,
+        areaHa,
+        perimeterM,
+        averageAccuracy,
+        minAccuracy,
+        maxAccuracy,
+        createdAt: new Date().toISOString(),
+      });
+    } catch {
+      Alert.alert(
+        "Calcul impossible",
+        "Les points GPS enregistrés ne permettent pas de calculer la surface. Supprimez le dernier point ou recommencez la mesure.",
+      );
+    }
   }, [measurementInfo, navigation, savedPoints]);
 
   const currentMapPoint = buildGpsPoint(currentPosition);
@@ -618,13 +686,19 @@ export default function MeasureMapScreen({ navigation, route }) {
     [currentMapPoint, savedPoints],
   );
   const handleShowMap = useCallback(() => {
+    const mapUnavailableReason = getMapUnavailableReason();
+
+    if (mapUnavailableReason) {
+      setMapError(mapUnavailableReason);
+      setShouldShowMap(false);
+      return;
+    }
+
     setMapError(null);
     setShouldShowMap(true);
   }, []);
   const handleMapError = useCallback(() => {
-    setMapError(
-      "La carte n’est pas disponible sur cet appareil. Continuez avec les points GPS.",
-    );
+    setMapError(MAP_LOAD_ERROR_MESSAGE);
     setShouldShowMap(false);
   }, []);
 
@@ -638,6 +712,12 @@ export default function MeasureMapScreen({ navigation, route }) {
       edgePadding: { bottom: 50, left: 50, right: 50, top: 50 },
     });
   }, [mapError, mapPoints, shouldShowMap]);
+  const activeMapComponents = shouldShowMap ? getMapComponents() : null;
+  const MapViewComponent = activeMapComponents?.MapView;
+  const MarkerComponent = activeMapComponents?.Marker;
+  const PolygonComponent = activeMapComponents?.Polygon;
+  const PolylineComponent = activeMapComponents?.Polyline;
+  const mapUnavailableReason = getMapUnavailableReason();
   const segmentDistances = useMemo(
     () => calculateSegmentDistances(savedPoints),
     [savedPoints],
@@ -678,31 +758,29 @@ export default function MeasureMapScreen({ navigation, route }) {
       />
 
       <View style={screenStyles.measurementSummary}>
-          <Text style={screenStyles.summaryTitle}>
-            Informations de la mesure
+        <Text style={screenStyles.summaryTitle}>Informations de la mesure</Text>
+
+        <View style={screenStyles.summaryItem}>
+          <Text style={screenStyles.summaryLabel}>Nom du client</Text>
+          <Text style={screenStyles.summaryValue}>
+            {measurementInfo.clientName}
           </Text>
-
-          <View style={screenStyles.summaryItem}>
-            <Text style={screenStyles.summaryLabel}>Nom du client</Text>
-            <Text style={screenStyles.summaryValue}>
-              {measurementInfo.clientName}
-            </Text>
-          </View>
-
-          <View style={screenStyles.summaryItem}>
-            <Text style={screenStyles.summaryLabel}>Localisation</Text>
-            <Text style={screenStyles.summaryValue}>
-              {measurementInfo.locationName}
-            </Text>
-          </View>
-
-          <View style={screenStyles.summaryItem}>
-            <Text style={screenStyles.summaryLabel}>Type de projet</Text>
-            <Text style={screenStyles.summaryValue}>
-              {measurementInfo.projectType}
-            </Text>
-          </View>
         </View>
+
+        <View style={screenStyles.summaryItem}>
+          <Text style={screenStyles.summaryLabel}>Localisation</Text>
+          <Text style={screenStyles.summaryValue}>
+            {measurementInfo.locationName}
+          </Text>
+        </View>
+
+        <View style={screenStyles.summaryItem}>
+          <Text style={screenStyles.summaryLabel}>Type de projet</Text>
+          <Text style={screenStyles.summaryValue}>
+            {measurementInfo.projectType}
+          </Text>
+        </View>
+      </View>
 
       <View style={styles.gpsCard}>
         <View style={styles.gpsHeader}>
@@ -779,8 +857,14 @@ export default function MeasureMapScreen({ navigation, route }) {
 
         {mapError ? <Text style={styles.errorText}>{mapError}</Text> : null}
 
-        {!shouldShowMap ? (
-          <PrimaryButton label="Afficher la carte" onPress={handleShowMap} />
+        {!shouldShowMap || !activeMapComponents ? (
+          <PrimaryButton
+            disabled={Boolean(mapUnavailableReason)}
+            label={
+              mapUnavailableReason ? "Carte indisponible" : "Afficher la carte"
+            }
+            onPress={handleShowMap}
+          />
         ) : (
           <>
             <View style={styles.mapTypeSelector}>
@@ -820,15 +904,14 @@ export default function MeasureMapScreen({ navigation, route }) {
               fallback={
                 <View style={styles.mapFallbackBox}>
                   <Text style={styles.mapFallbackText}>
-                    La carte n’est pas disponible. Continuez avec les points GPS
-                    enregistrés.
+                    {MAP_LOAD_ERROR_MESSAGE}
                   </Text>
                 </View>
               }
               onMapError={handleMapError}
             >
               <View style={styles.mapContainer}>
-                <MapView
+                <MapViewComponent
                   ref={mapRef}
                   style={styles.map}
                   initialRegion={mapRegion}
@@ -836,7 +919,7 @@ export default function MeasureMapScreen({ navigation, route }) {
                   onMapReady={() => setMapError(null)}
                 >
                   {currentMapCoordinate ? (
-                    <Marker
+                    <MarkerComponent
                       coordinate={currentMapCoordinate}
                       pinColor="#2563EB"
                       title="Position actuelle"
@@ -844,20 +927,22 @@ export default function MeasureMapScreen({ navigation, route }) {
                   ) : null}
 
                   {mapPointItems.map(({ coordinate, index }) => (
-                    <Marker
+                    <MarkerComponent
                       key={`saved-marker-${index}-${coordinate.latitude}-${coordinate.longitude}`}
                       coordinate={coordinate}
                       title={`Point ${index + 1}`}
                       description="Point GPS enregistré"
                     >
                       <View style={styles.numberedMarker}>
-                        <Text style={styles.numberedMarkerText}>{index + 1}</Text>
+                        <Text style={styles.numberedMarkerText}>
+                          {index + 1}
+                        </Text>
                       </View>
-                    </Marker>
+                    </MarkerComponent>
                   ))}
 
                   {mapPoints.length >= 2 ? (
-                    <Polyline
+                    <PolylineComponent
                       coordinates={mapPoints}
                       strokeColor={colors.primary}
                       strokeWidth={4}
@@ -865,14 +950,14 @@ export default function MeasureMapScreen({ navigation, route }) {
                   ) : null}
 
                   {mapPoints.length >= 3 ? (
-                    <Polygon
+                    <PolygonComponent
                       coordinates={mapPoints}
                       fillColor="rgba(47, 133, 90, 0.20)"
                       strokeColor={colors.primaryDark}
                       strokeWidth={2}
                     />
                   ) : null}
-                </MapView>
+                </MapViewComponent>
               </View>
             </MapErrorBoundary>
 
@@ -917,7 +1002,7 @@ export default function MeasureMapScreen({ navigation, route }) {
           />
           {isStabilizingGps ? (
             <Text style={styles.stabilizationText}>
-              Stabilisation GPS… restez immobile. Lectures collectées : {" "}
+              Stabilisation GPS… restez immobile. Lectures collectées :{" "}
               {stabilizationSamplesCount} / {GPS_STABILIZATION_SAMPLE_COUNT}
             </Text>
           ) : null}
