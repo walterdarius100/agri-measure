@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   Pressable,
@@ -27,6 +34,16 @@ import screenStyles from "./screenStyles";
 
 const POSITION_UNAVAILABLE_MESSAGE =
   "Position GPS indisponible. Vérifiez que le GPS est activé et réessayez en extérieur.";
+const MAP_FALLBACK_MESSAGE =
+  "Si la carte ne s’affiche pas, vous pouvez continuer la mesure avec les points GPS.";
+const DEFAULT_MEASUREMENT_INFO = {
+  clientName: "Non renseigné",
+  locationName: "Non renseignée",
+  projectType: "Non renseigné",
+  phone: "",
+  notes: "",
+};
+const LOCATION_TIMEOUT_MS = 15000;
 const MAX_SAVED_POINTS = 100;
 const GPS_STABILIZATION_SAMPLE_COUNT = 5;
 const GPS_STABILIZATION_DELAY_MS = 1250;
@@ -36,6 +53,95 @@ const MAP_TYPE_OPTIONS = [
   { label: "Satellite", value: "satellite" },
   { label: "Hybride", value: "hybrid" },
 ];
+
+function normalizeMeasurementText(value, fallback) {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeMeasurementInfo(measurementInfo) {
+  const safeMeasurementInfo =
+    measurementInfo && typeof measurementInfo === "object" ? measurementInfo : {};
+
+  return {
+    ...DEFAULT_MEASUREMENT_INFO,
+    ...safeMeasurementInfo,
+    clientName: normalizeMeasurementText(
+      safeMeasurementInfo.clientName,
+      DEFAULT_MEASUREMENT_INFO.clientName,
+    ),
+    locationName: normalizeMeasurementText(
+      safeMeasurementInfo.locationName,
+      DEFAULT_MEASUREMENT_INFO.locationName,
+    ),
+    projectType: normalizeMeasurementText(
+      safeMeasurementInfo.projectType,
+      DEFAULT_MEASUREMENT_INFO.projectType,
+    ),
+  };
+}
+
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  let timeoutId;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+async function requestForegroundLocationPermission() {
+  try {
+    return await Location.requestForegroundPermissionsAsync();
+  } catch {
+    return { status: "denied" };
+  }
+}
+
+async function getSafeCurrentPosition() {
+  try {
+    return await withTimeout(
+      Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Highest,
+      }),
+      LOCATION_TIMEOUT_MS,
+      "Location request timed out",
+    );
+  } catch {
+    try {
+      return await Location.getLastKnownPositionAsync({});
+    } catch {
+      return null;
+    }
+  }
+}
+
+class MapErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch() {
+    this.props.onMapError?.();
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback;
+    }
+
+    return this.props.children;
+  }
+}
 
 function formatCoordinate(value) {
   return typeof value === "number" ? value.toFixed(7) : "Indisponible";
@@ -250,12 +356,17 @@ function areSamePoint(firstPoint, secondPoint) {
 }
 
 export default function MeasureMapScreen({ navigation, route }) {
-  const measurementInfo = route.params?.measurementInfo;
+  const measurementInfo = useMemo(
+    () => normalizeMeasurementInfo(route?.params?.measurementInfo),
+    [route?.params?.measurementInfo],
+  );
   const [currentPosition, setCurrentPosition] = useState(null);
   const [isLoadingPosition, setIsLoadingPosition] = useState(true);
   const [locationError, setLocationError] = useState(null);
   const [savedPoints, setSavedPoints] = useState([]);
   const [mapType, setMapType] = useState("standard");
+  const [shouldShowMap, setShouldShowMap] = useState(false);
+  const [mapError, setMapError] = useState(null);
   const [isStabilizingGps, setIsStabilizingGps] = useState(false);
   const [stabilizationSamplesCount, setStabilizationSamplesCount] = useState(0);
   const mapRef = useRef(null);
@@ -265,7 +376,7 @@ export default function MeasureMapScreen({ navigation, route }) {
     setLocationError(null);
 
     try {
-      const permission = await Location.requestForegroundPermissionsAsync();
+      const permission = await requestForegroundLocationPermission();
 
       if (permission.status !== "granted") {
         setCurrentPosition(null);
@@ -275,9 +386,13 @@ export default function MeasureMapScreen({ navigation, route }) {
         return;
       }
 
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Highest,
-      });
+      const position = await getSafeCurrentPosition();
+
+      if (!position?.coords) {
+        setCurrentPosition(null);
+        setLocationError(POSITION_UNAVAILABLE_MESSAGE);
+        return;
+      }
 
       setCurrentPosition(position);
     } catch {
@@ -352,7 +467,7 @@ export default function MeasureMapScreen({ navigation, route }) {
     setStabilizationSamplesCount(0);
 
     try {
-      const permission = await Location.requestForegroundPermissionsAsync();
+      const permission = await requestForegroundLocationPermission();
 
       if (permission.status !== "granted") {
         setCurrentPosition(null);
@@ -369,12 +484,12 @@ export default function MeasureMapScreen({ navigation, route }) {
       const samples = [];
 
       for (let index = 0; index < GPS_STABILIZATION_SAMPLE_COUNT; index += 1) {
-        const position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Highest,
-        });
+        const position = await getSafeCurrentPosition();
         const point = buildGpsPoint(position);
 
-        setCurrentPosition(position);
+        if (position?.coords) {
+          setCurrentPosition(position);
+        }
 
         if (isUsableGpsSample(point)) {
           samples.push(point);
@@ -502,9 +617,19 @@ export default function MeasureMapScreen({ navigation, route }) {
     () => buildMapRegion(savedPoints, currentMapPoint),
     [currentMapPoint, savedPoints],
   );
+  const handleShowMap = useCallback(() => {
+    setMapError(null);
+    setShouldShowMap(true);
+  }, []);
+  const handleMapError = useCallback(() => {
+    setMapError(
+      "La carte n’est pas disponible sur cet appareil. Continuez avec les points GPS.",
+    );
+    setShouldShowMap(false);
+  }, []);
 
   useEffect(() => {
-    if (mapPoints.length === 0) {
+    if (!shouldShowMap || mapError || mapPoints.length === 0) {
       return;
     }
 
@@ -512,7 +637,7 @@ export default function MeasureMapScreen({ navigation, route }) {
       animated: true,
       edgePadding: { bottom: 50, left: 50, right: 50, top: 50 },
     });
-  }, [mapPoints]);
+  }, [mapError, mapPoints, shouldShowMap]);
   const segmentDistances = useMemo(
     () => calculateSegmentDistances(savedPoints),
     [savedPoints],
@@ -552,8 +677,7 @@ export default function MeasureMapScreen({ navigation, route }) {
         status={accuracyBadge.status}
       />
 
-      {measurementInfo ? (
-        <View style={screenStyles.measurementSummary}>
+      <View style={screenStyles.measurementSummary}>
           <Text style={screenStyles.summaryTitle}>
             Informations de la mesure
           </Text>
@@ -579,7 +703,6 @@ export default function MeasureMapScreen({ navigation, route }) {
             </Text>
           </View>
         </View>
-      ) : null}
 
       <View style={styles.gpsCard}>
         <View style={styles.gpsHeader}>
@@ -648,101 +771,130 @@ export default function MeasureMapScreen({ navigation, route }) {
         <View style={styles.pointsHeader}>
           <Text style={styles.pointsTitle}>Carte du terrain</Text>
           <Text style={styles.pointsCount}>
-            Visualisation des points GPS enregistrés
+            Visualisation optionnelle des points GPS enregistrés
           </Text>
         </View>
 
-        <View style={styles.mapTypeSelector}>
-          {MAP_TYPE_OPTIONS.map((option) => {
-            const isSelected = mapType === option.value;
+        <Text style={styles.mapFallbackText}>{MAP_FALLBACK_MESSAGE}</Text>
 
-            return (
-              <Pressable
-                key={option.value}
-                accessibilityRole="button"
-                accessibilityState={{ selected: isSelected }}
-                onPress={() => setMapType(option.value)}
-                style={[
-                  styles.mapTypeButton,
-                  isSelected ? styles.mapTypeButtonSelected : null,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.mapTypeButtonText,
-                    isSelected ? styles.mapTypeButtonTextSelected : null,
-                  ]}
-                >
-                  {option.label}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        {mapError ? <Text style={styles.errorText}>{mapError}</Text> : null}
 
-        <Text style={styles.mapTypeNote}>
-          Le mode satellite dépend de la disponibilité des données
-          cartographiques et de la connexion Internet.
-        </Text>
+        {!shouldShowMap ? (
+          <PrimaryButton label="Afficher la carte" onPress={handleShowMap} />
+        ) : (
+          <>
+            <View style={styles.mapTypeSelector}>
+              {MAP_TYPE_OPTIONS.map((option) => {
+                const isSelected = mapType === option.value;
 
-        <View style={styles.mapContainer}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            initialRegion={mapRegion}
-            mapType={mapType}
-          >
-            {currentMapCoordinate ? (
-              <Marker
-                coordinate={currentMapCoordinate}
-                pinColor="#2563EB"
-                title="Position actuelle"
-              />
-            ) : null}
+                return (
+                  <Pressable
+                    key={option.value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: isSelected }}
+                    onPress={() => setMapType(option.value)}
+                    style={[
+                      styles.mapTypeButton,
+                      isSelected ? styles.mapTypeButtonSelected : null,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.mapTypeButtonText,
+                        isSelected ? styles.mapTypeButtonTextSelected : null,
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-            {mapPointItems.map(({ coordinate, index }) => (
-              <Marker
-                key={`saved-marker-${index}-${coordinate.latitude}-${coordinate.longitude}`}
-                coordinate={coordinate}
-                title={`Point ${index + 1}`}
-                description="Point GPS enregistré"
-              >
-                <View style={styles.numberedMarker}>
-                  <Text style={styles.numberedMarkerText}>{index + 1}</Text>
+            <Text style={styles.mapTypeNote}>
+              Le mode satellite dépend de la disponibilité des données
+              cartographiques et de la connexion Internet.
+            </Text>
+
+            <MapErrorBoundary
+              fallback={
+                <View style={styles.mapFallbackBox}>
+                  <Text style={styles.mapFallbackText}>
+                    La carte n’est pas disponible. Continuez avec les points GPS
+                    enregistrés.
+                  </Text>
                 </View>
-              </Marker>
-            ))}
+              }
+              onMapError={handleMapError}
+            >
+              <View style={styles.mapContainer}>
+                <MapView
+                  ref={mapRef}
+                  style={styles.map}
+                  initialRegion={mapRegion}
+                  mapType={mapType}
+                  onMapReady={() => setMapError(null)}
+                >
+                  {currentMapCoordinate ? (
+                    <Marker
+                      coordinate={currentMapCoordinate}
+                      pinColor="#2563EB"
+                      title="Position actuelle"
+                    />
+                  ) : null}
 
-            {mapPoints.length >= 2 ? (
-              <Polyline
-                coordinates={mapPoints}
-                strokeColor={colors.primary}
-                strokeWidth={4}
-              />
-            ) : null}
+                  {mapPointItems.map(({ coordinate, index }) => (
+                    <Marker
+                      key={`saved-marker-${index}-${coordinate.latitude}-${coordinate.longitude}`}
+                      coordinate={coordinate}
+                      title={`Point ${index + 1}`}
+                      description="Point GPS enregistré"
+                    >
+                      <View style={styles.numberedMarker}>
+                        <Text style={styles.numberedMarkerText}>{index + 1}</Text>
+                      </View>
+                    </Marker>
+                  ))}
 
-            {mapPoints.length >= 3 ? (
-              <Polygon
-                coordinates={mapPoints}
-                fillColor="rgba(47, 133, 90, 0.20)"
-                strokeColor={colors.primaryDark}
-                strokeWidth={2}
-              />
-            ) : null}
-          </MapView>
-        </View>
+                  {mapPoints.length >= 2 ? (
+                    <Polyline
+                      coordinates={mapPoints}
+                      strokeColor={colors.primary}
+                      strokeWidth={4}
+                    />
+                  ) : null}
 
-        <View style={styles.mapLegend}>
-          <Text style={styles.legendText}>
-            • Marqueur vert : point GPS enregistré
-          </Text>
-          <Text style={styles.legendText}>
-            • Marqueur bleu : position actuelle du téléphone
-          </Text>
-          <Text style={styles.legendText}>
-            • La surface verte apparaît dès 3 points enregistrés.
-          </Text>
-        </View>
+                  {mapPoints.length >= 3 ? (
+                    <Polygon
+                      coordinates={mapPoints}
+                      fillColor="rgba(47, 133, 90, 0.20)"
+                      strokeColor={colors.primaryDark}
+                      strokeWidth={2}
+                    />
+                  ) : null}
+                </MapView>
+              </View>
+            </MapErrorBoundary>
+
+            <PrimaryButton
+              label="Masquer la carte"
+              onPress={() => setShouldShowMap(false)}
+              variant="secondary"
+            />
+
+            <View style={styles.mapLegend}>
+              <Text style={styles.legendText}>
+                • Marqueur vert : point GPS enregistré
+              </Text>
+              <Text style={styles.legendText}>
+                • Marqueur bleu : position actuelle du téléphone
+              </Text>
+              <Text style={styles.legendText}>
+                • La surface verte apparaît dès 3 points enregistrés.
+              </Text>
+            </View>
+          </>
+        )}
       </View>
 
       <View style={styles.pointsCard}>
@@ -961,6 +1113,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     lineHeight: 19,
+  },
+  mapFallbackText: {
+    color: colors.primaryDark,
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  mapFallbackBox: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: 18,
+    padding: 16,
   },
   mapContainer: {
     borderRadius: 18,
